@@ -184,11 +184,26 @@ class DidisClient:
     def graph(self, did: str) -> GraphResponse:
         return cast(GraphResponse, _raise_for_problem(self._client.get(f"/v1/graph/{_enc(did)}")))
 
-    def verify_credential(self, credential: Any, *, expected_audience: Optional[str] = None) -> CredentialVerification:
-        """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity."""
+    def verify_credential(
+        self,
+        credential: Any,
+        *,
+        expected_audience: Optional[str] = None,
+        expected_nonce: Optional[str] = None,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> CredentialVerification:
+        """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity.
+
+        SD-JWT VC: ``expected_nonce`` constrains the Key Binding JWT; ``trusted_issuer_certificates``
+        (PEM or base64 DER) are the only anchors for ``x5c`` chains; without them ``x5c`` is never VALID.
+        """
         body: JSON = {"credential": credential}
         if expected_audience is not None:
             body["expectedAudience"] = expected_audience
+        if expected_nonce is not None:
+            body["expectedNonce"] = expected_nonce
+        if trusted_issuer_certificates is not None:
+            body["trustedIssuerCertificates"] = list(trusted_issuer_certificates)
         return cast(CredentialVerification, _raise_for_problem(self._client.post("/v1/credentials/verify", json=body)))
 
     def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:
@@ -293,11 +308,26 @@ class AsyncDidisClient:
     async def graph(self, did: str) -> GraphResponse:
         return cast(GraphResponse, _raise_for_problem(await self._client.get(f"/v1/graph/{_enc(did)}")))
 
-    async def verify_credential(self, credential: Any, *, expected_audience: Optional[str] = None) -> CredentialVerification:
-        """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity."""
+    async def verify_credential(
+        self,
+        credential: Any,
+        *,
+        expected_audience: Optional[str] = None,
+        expected_nonce: Optional[str] = None,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> CredentialVerification:
+        """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity.
+
+        SD-JWT VC: ``expected_nonce`` constrains the Key Binding JWT; ``trusted_issuer_certificates``
+        (PEM or base64 DER) are the only anchors for ``x5c`` chains; without them ``x5c`` is never VALID.
+        """
         body: JSON = {"credential": credential}
         if expected_audience is not None:
             body["expectedAudience"] = expected_audience
+        if expected_nonce is not None:
+            body["expectedNonce"] = expected_nonce
+        if trusted_issuer_certificates is not None:
+            body["trustedIssuerCertificates"] = list(trusted_issuer_certificates)
         return cast(CredentialVerification, _raise_for_problem(await self._client.post("/v1/credentials/verify", json=body)))
 
     async def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:

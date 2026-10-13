@@ -206,6 +206,26 @@ class GraphResponse(TypedDict):
     edges: List[GraphEdge]
 
 
+class IssuerTrust(TypedDict):
+    """SD-JWT VC issuer trust: categorical, never a score; EU trusted lists are never checked."""
+
+    anchor: Literal["DID", "X509_CERTIFICATE", "ISSUER_METADATA", "NONE"]
+    result: Literal["NOT_APPLICABLE", "NOT_ESTABLISHED", "CALLER_ANCHORED", "CHAIN_INVALID"]
+    trustedListChecked: bool
+    chain: NotRequired[List[Dict[str, Any]]]
+    metadataUrl: NotRequired[str]
+    proves: str
+    doesNotProve: str
+
+
+class SdJwtEvidence(TypedDict):
+    sdAlg: str
+    disclosures: int
+    decoyDigests: int
+    registeredClaims: Dict[str, Any]
+    keyBinding: Literal["VERIFIED", "ABSENT", "INVALID", "UNSUPPORTED", "INDETERMINATE"]
+
+
 class CredentialVerification(TypedDict):
     status: str
     headline: str
@@ -222,6 +242,8 @@ class CredentialVerification(TypedDict):
     proof: NotRequired[Dict[str, Any]]
     statusList: List[Dict[str, Any]]
     issuerResolution: NotRequired[Dict[str, Any]]
+    issuerTrust: NotRequired["IssuerTrust"]
+    sdJwt: NotRequired["SdJwtEvidence"]
     claims: Any
     credential: Any
     limitations: List[str]
