@@ -237,5 +237,80 @@ class AsyncGuardTests(unittest.TestCase):
         self.assertEqual(asyncio.run(run()), 1)
 
 
+class CapabilityMappingTests(unittest.TestCase):
+    DEF = {"name": "weather_forecast", "description": "Forecast for a city.", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}
+
+    def test_mcp_safe_name_maps_to_namespaced_capability(self):
+        pins = pin_tool_definitions([self.DEF])
+        decisions = []
+        client = FakeClient(lambda _: allow("weather:forecast"))
+        guard = DidisGuard(client, AGENT, ROOT, pins=pins, require_pins=True, on_decision=decisions.append)
+        guard.check("weather_forecast", self.DEF, capability="weather:forecast")
+        self.assertEqual(client.calls, [(AGENT, "weather:forecast", ROOT)])
+        self.assertEqual(decisions[0], {"tool": "weather_forecast", "capability": "weather:forecast", "allowed": True, "code": None, "reason": "capability 'weather:forecast' grants 'weather:forecast'", "cached": False})
+        guard.check("weather_forecast", self.DEF, capability="weather:forecast")
+        self.assertEqual(len(client.calls), 1)
+        self.assertTrue(decisions[1]["cached"])
+        with self.assertRaises(DidisGuardError) as ctx:
+            guard.check("weather_forecast", {**self.DEF, "description": "changed"}, capability="weather:forecast")
+        self.assertEqual(ctx.exception.code, "TOOL_DRIFT")
+        self.assertEqual(len(client.calls), 1)
+
+        @guard.tool("weather_forecast", self.DEF, capability="weather:forecast")
+        def forecast(city):
+            return f"Sunny in {city}"
+
+        self.assertEqual(forecast("Oslo"), "Sunny in Oslo")
+
+    def test_answer_for_another_capability_is_rejected(self):
+        client = FakeClient([allow("weather:forecast")])
+        with self.assertRaises(DidisGuardError) as ctx:
+            DidisGuard(client, AGENT).check("weather_forecast", capability="weather:alerts")
+        self.assertEqual(ctx.exception.code, "GUARD_UNAVAILABLE")
+
+    def test_default_capability_is_tool_name(self):
+        client = FakeClient([allow("weather:forecast")])
+        DidisGuard(client, AGENT).check("weather:forecast")
+        self.assertEqual(client.calls[0][1], "weather:forecast")
+
+    def test_capabilities_must_be_exact(self):
+        client = FakeClient(lambda _: allow("x"))
+        guard = DidisGuard(client, AGENT)
+        for cap in ["*", "weather:*", "a::b", ":a", "a:", "two words", "", " weather:forecast", "a\n"]:
+            with self.assertRaises(DidisGuardError, msg=cap) as ctx:
+                guard.check("t", capability=cap)
+            self.assertEqual(ctx.exception.code, "GUARD_MISCONFIGURED")
+            self.assertEqual(ctx.exception.detail["capability"], cap)
+        self.assertEqual(client.calls, [])
+
+    def test_deny_detail_carries_both_names(self):
+        client = FakeClient([deny("payments:refund")])
+        with self.assertRaises(DidisGuardError) as ctx:
+            DidisGuard(client, AGENT).check("payments_refund", capability="payments:refund")
+        self.assertEqual((ctx.exception.code, ctx.exception.tool, ctx.exception.detail["capability"]), ("TOOL_NOT_AUTHORIZED", "payments_refund", "payments:refund"))
+
+    def test_async_guard_and_one_liner_forward_capability(self):
+        client = FakeAsyncClient([allow("weather:forecast")])
+
+        @didis_guard(client, AGENT, "weather_forecast", ROOT, capability="weather:forecast")
+        async def run():
+            return 1
+
+        self.assertEqual(asyncio.run(run()), 1)
+        self.assertEqual(client.calls, [(AGENT, "weather:forecast", ROOT)])
+
+    def test_async_definition_errors_fail_closed(self):
+        pins = pin_tool_definitions([self.DEF])
+        client = FakeAsyncClient([])
+
+        async def broken():
+            raise RuntimeError("server gone")
+
+        with self.assertRaises(DidisGuardError) as ctx:
+            asyncio.run(AsyncDidisGuard(client, AGENT, pins=pins).check("weather_forecast", broken, capability="weather:forecast"))
+        self.assertEqual(ctx.exception.code, "TOOL_DEFINITION_MISSING")
+        self.assertEqual(client.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

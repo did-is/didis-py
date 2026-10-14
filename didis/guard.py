@@ -5,8 +5,14 @@ Before a guarded tool function runs, the guard checks:
 1. Definition pin (local, no network): the tool definition the agent actually received hashes to
    the SHA-256 you approved (the same RFC 8785 JCS hash DID.is reports as ``definitionSha256``).
 2. Delegation (DID.is ``verify-tool``): the configured agent DID holds a registered, VALID
-   delegation whose leaf capabilities grant the tool. ALLOW is cached briefly; DENY and errors
-   are never cached.
+   delegation whose leaf capabilities grant the tool's capability. ALLOW is cached briefly;
+   DENY and errors are never cached.
+
+Tool name vs capability: MCP tool names may only use ``A-Z a-z 0-9 _ - .`` (SEP-986), while
+DID.is capabilities are namespaced with ``:`` (e.g. ``weather:forecast``). Pass both when they
+differ: ``guard.check("weather_forecast", definition, capability="weather:forecast")``. Pins are
+keyed by the tool name (what ``tools/list`` returns); DID.is is asked about the capability.
+When ``capability`` is omitted, the tool name is used as the capability.
 
 Any failure raises :class:`DidisGuardError` and the function is not called.
 :func:`attest_mcp_pins` is an optional startup check that asks DID.is to inspect a public MCP
@@ -32,6 +38,8 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 _DID = re.compile(r"^did:[a-z0-9]+:\S+$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# An exact DID.is capability: ":"-separated non-empty segments, no whitespace, no "*".
+_CAPABILITY = re.compile(r"^[^\s:*]+(?::[^\s:*]+)*\Z")
 
 GUARD_ERROR_CODES = ("TOOL_DRIFT", "TOOL_DEFINITION_MISSING", "TOOL_NOT_AUTHORIZED", "GUARD_UNAVAILABLE", "GUARD_MISCONFIGURED")
 
@@ -158,63 +166,68 @@ class _GuardCore:
         self._allowed: Dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def _report(self, tool: str, allowed: bool, reason: str, cached: bool, code: Optional[str] = None) -> None:
+    def _report(self, tool: str, capability: str, allowed: bool, reason: str, cached: bool, code: Optional[str] = None) -> None:
         if self.on_decision is None:
             return
         try:
-            self.on_decision({"tool": tool, "allowed": allowed, "code": code, "reason": reason, "cached": cached})
+            self.on_decision({"tool": tool, "capability": capability, "allowed": allowed, "code": code, "reason": reason, "cached": cached})
         except Exception:  # audit hooks must not change the decision
             pass
 
-    def fail(self, code: str, tool: str, reason: str, detail: Optional[Dict[str, Any]] = None) -> DidisGuardError:
-        self._report(tool, False, reason, False, code)
-        return DidisGuardError(code, tool, reason, detail)
+    def fail(self, code: str, tool: str, capability: str, reason: str, detail: Optional[Dict[str, Any]] = None) -> DidisGuardError:
+        self._report(tool, capability, False, reason, False, code)
+        return DidisGuardError(code, tool, reason, {**(detail or {}), "capability": capability})
 
-    def check_tool_name(self, tool: Any) -> None:
+    def resolve_names(self, tool: Any, capability: Any) -> str:
+        """Validates the tool name and returns the capability to ask DID.is about."""
         if not isinstance(tool, str) or not tool.strip() or tool != tool.strip():
-            raise self.fail("GUARD_MISCONFIGURED", str(tool), "tool must be a non-empty, trimmed name")
+            raise self.fail("GUARD_MISCONFIGURED", str(tool), str(tool if capability is None else capability), "tool must be a non-empty, trimmed name")
+        cap = tool if capability is None else capability
+        if not isinstance(cap, str) or not _CAPABILITY.match(cap):
+            raise self.fail("GUARD_MISCONFIGURED", tool, str(cap), "capability must be exact: ':'-separated non-empty segments, no spaces, no '*'")
+        return cap
 
-    def check_definition(self, tool: str, definition: Definition) -> None:
+    def check_definition(self, tool: str, capability: str, definition: Definition) -> None:
         pin = self.pins.get(tool)
         if pin is None:
             if self.require_pins:
-                raise self.fail("TOOL_DEFINITION_MISSING", tool, f"no pinned definition for '{tool}'")
+                raise self.fail("TOOL_DEFINITION_MISSING", tool, capability, f"no pinned definition for '{tool}'")
             return
         try:
             current = definition() if callable(definition) else definition
         except Exception:
-            raise self.fail("TOOL_DEFINITION_MISSING", tool, f"could not read the current definition of '{tool}'") from None
+            raise self.fail("TOOL_DEFINITION_MISSING", tool, capability, f"could not read the current definition of '{tool}'") from None
         if current is None:
-            raise self.fail("TOOL_DEFINITION_MISSING", tool, f"'{tool}' is pinned but no definition was supplied")
+            raise self.fail("TOOL_DEFINITION_MISSING", tool, capability, f"'{tool}' is pinned but no definition was supplied")
         try:
             actual = tool_definition_sha256(current)
         except (TypeError, ValueError):
-            raise self.fail("TOOL_DRIFT", tool, f"the definition of '{tool}' is not valid JSON") from None
+            raise self.fail("TOOL_DRIFT", tool, capability, f"the definition of '{tool}' is not valid JSON") from None
         if not isinstance(current, Mapping) or current.get("name") != tool:
-            raise self.fail("TOOL_DRIFT", tool, f"definition name does not match '{tool}'", {"expected": pin, "actual": actual})
+            raise self.fail("TOOL_DRIFT", tool, capability, f"definition name does not match '{tool}'", {"expected": pin, "actual": actual})
         if actual != pin:
-            raise self.fail("TOOL_DRIFT", tool, f"definition of '{tool}' changed since it was approved", {"expected": pin, "actual": actual})
+            raise self.fail("TOOL_DRIFT", tool, capability, f"definition of '{tool}' changed since it was approved", {"expected": pin, "actual": actual})
 
-    def cached(self, tool: str) -> bool:
+    def cached(self, tool: str, capability: str) -> bool:
         with self._lock:
-            until = self._allowed.get(tool)
+            until = self._allowed.get(capability)
             if until is not None and until > time.monotonic():
                 hit = True
             else:
-                self._allowed.pop(tool, None)
+                self._allowed.pop(capability, None)
                 hit = False
         if hit:
-            self._report(tool, True, "cached ALLOW", True)
+            self._report(tool, capability, True, "cached ALLOW", True)
         return hit
 
-    def accept(self, tool: str, auth: Any) -> None:
-        exact = isinstance(auth, Mapping) and auth.get("decision") == "ALLOW" and auth.get("authorized") is True and auth.get("agent") == self.agent and auth.get("tool") == tool
+    def accept(self, tool: str, capability: str, auth: Any) -> None:
+        exact = isinstance(auth, Mapping) and auth.get("decision") == "ALLOW" and auth.get("authorized") is True and auth.get("agent") == self.agent and auth.get("tool") == capability
         if not exact:
             if isinstance(auth, Mapping) and (auth.get("decision") == "DENY" or auth.get("authorized") is False):
-                raise self.fail("TOOL_NOT_AUTHORIZED", tool, str(auth.get("reason") or "delegation does not grant this tool"), {"matchedCapability": auth.get("matchedCapability")})
-            raise self.fail("GUARD_UNAVAILABLE", tool, "DID.is returned an unexpected authorization answer")
+                raise self.fail("TOOL_NOT_AUTHORIZED", tool, capability, str(auth.get("reason") or "delegation does not grant this capability"), {"matchedCapability": auth.get("matchedCapability")})
+            raise self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is returned an unexpected authorization answer")
         if self.root is not None and auth.get("root") != self.root:
-            raise self.fail("TOOL_NOT_AUTHORIZED", tool, "delegation root does not match the configured root")
+            raise self.fail("TOOL_NOT_AUTHORIZED", tool, capability, "delegation root does not match the configured root")
         if self.allow_cache_seconds > 0:
             ttl = self.allow_cache_seconds
             expires = auth.get("expires")
@@ -225,12 +238,12 @@ class _GuardCore:
                     pass
             if ttl > 0:
                 with self._lock:
-                    self._allowed[tool] = time.monotonic() + ttl
-        self._report(tool, True, str(auth.get("reason", "")), False)
+                    self._allowed[capability] = time.monotonic() + ttl
+        self._report(tool, capability, True, str(auth.get("reason", "")), False)
 
-    def unavailable(self, tool: str, exc: Exception) -> DidisGuardError:
+    def unavailable(self, tool: str, capability: str, exc: Exception) -> DidisGuardError:
         status = getattr(exc, "status", None)
-        return self.fail("GUARD_UNAVAILABLE", tool, "DID.is verify-tool failed" + (f" (HTTP {status})" if status else ""), {"status": status})
+        return self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is verify-tool failed" + (f" (HTTP {status})" if status else ""), {"status": status})
 
     def clear_cache(self) -> None:
         with self._lock:
@@ -249,34 +262,38 @@ class DidisGuard:
         self._client = client
         self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision)
 
-    def check(self, tool: str, definition: Definition = None) -> None:
-        """Raises :class:`DidisGuardError` unless the call may proceed."""
+    def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
+        """Raises :class:`DidisGuardError` unless the call may proceed.
+
+        ``tool`` is the name the agent sees (MCP ``tools/list`` name, pin key). ``capability`` is
+        the DID.is capability it needs (e.g. ``weather:forecast``); it defaults to ``tool``.
+        """
         core = self._core
-        core.check_tool_name(tool)
-        core.check_definition(tool, definition)
-        if core.cached(tool):
+        cap = core.resolve_names(tool, capability)
+        core.check_definition(tool, cap, definition)
+        if core.cached(tool, cap):
             return
         try:
-            auth = self._client.verify_tool(core.agent, tool, core.root)
+            auth = self._client.verify_tool(core.agent, cap, core.root)
         except Exception as exc:
-            raise core.unavailable(tool, exc) from None
-        core.accept(tool, auth)
+            raise core.unavailable(tool, cap, exc) from None
+        core.accept(tool, cap, auth)
 
-    def tool(self, tool: str, definition: Definition = None) -> Callable[[F], F]:
+    def tool(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> Callable[[F], F]:
         """Decorator: the function runs only after :meth:`check` passes (sync or async functions)."""
 
         def decorate(func: F) -> F:
             if inspect.iscoroutinefunction(func):
                 @functools.wraps(func)
                 async def run_async(*args: Any, **kwargs: Any) -> Any:
-                    self.check(tool, definition)
+                    self.check(tool, definition, capability=capability)
                     return await func(*args, **kwargs)
 
                 return run_async  # type: ignore[return-value]
 
             @functools.wraps(func)
             def run(*args: Any, **kwargs: Any) -> Any:
-                self.check(tool, definition)
+                self.check(tool, definition, capability=capability)
                 return func(*args, **kwargs)
 
             return run  # type: ignore[return-value]
@@ -296,29 +313,32 @@ class AsyncDidisGuard:
         self._client = client
         self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision)
 
-    async def check(self, tool: str, definition: Definition = None) -> None:
+    async def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
         core = self._core
-        core.check_tool_name(tool)
+        cap = core.resolve_names(tool, capability)
         if callable(definition):
-            got = definition()
-            definition = (await got) if inspect.isawaitable(got) else got
-        core.check_definition(tool, definition)
-        if core.cached(tool):
+            try:
+                got = definition()
+                definition = (await got) if inspect.isawaitable(got) else got
+            except Exception:
+                raise core.fail("TOOL_DEFINITION_MISSING", tool, cap, f"could not read the current definition of '{tool}'") from None
+        core.check_definition(tool, cap, definition)
+        if core.cached(tool, cap):
             return
         try:
-            auth = await self._client.verify_tool(core.agent, tool, core.root)
+            auth = await self._client.verify_tool(core.agent, cap, core.root)
         except Exception as exc:
-            raise core.unavailable(tool, exc) from None
-        core.accept(tool, auth)
+            raise core.unavailable(tool, cap, exc) from None
+        core.accept(tool, cap, auth)
 
-    def tool(self, tool: str, definition: Definition = None) -> Callable[[F], F]:
+    def tool(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> Callable[[F], F]:
         def decorate(func: F) -> F:
             if not inspect.iscoroutinefunction(func):
                 raise DidisGuardError("GUARD_MISCONFIGURED", tool, "AsyncDidisGuard decorates async functions; use DidisGuard for sync functions")
 
             @functools.wraps(func)
             async def run(*args: Any, **kwargs: Any) -> Any:
-                await self.check(tool, definition)
+                await self.check(tool, definition, capability=capability)
                 return await func(*args, **kwargs)
 
             return run  # type: ignore[return-value]
@@ -329,8 +349,8 @@ class AsyncDidisGuard:
         self._core.clear_cache()
 
 
-def didis_guard(client: Union[DidisClient, AsyncDidisClient], agent: str, tool: str, root: Optional[str] = None, *, pin: Optional[str] = None, definition: Definition = None, **options: Any) -> Callable[[F], F]:
-    """One-line decorator: ``@didis_guard(client, agent, "github:create_issue", root, pin=..., definition=...)``.
+def didis_guard(client: Union[DidisClient, AsyncDidisClient], agent: str, tool: str, root: Optional[str] = None, *, pin: Optional[str] = None, definition: Definition = None, capability: Optional[str] = None, **options: Any) -> Callable[[F], F]:
+    """One-line decorator: ``@didis_guard(client, agent, "github_create_issue", root, capability="github:create_issue", pin=..., definition=...)``.
 
     For several tools, create one :class:`DidisGuard` and use ``guard.tool(...)`` so the ALLOW
     cache is shared.
@@ -341,7 +361,7 @@ def didis_guard(client: Union[DidisClient, AsyncDidisClient], agent: str, tool: 
         guard = AsyncDidisGuard(client, agent, root, pins=pins, **options)
     else:
         guard = DidisGuard(client, agent, root, pins=pins, **options)
-    return guard.tool(tool, definition)
+    return guard.tool(tool, definition, capability=capability)
 
 
 def attest_mcp_pins(client: DidisClient, endpoint: str, pins: Mapping[str, str]) -> Dict[str, Any]:

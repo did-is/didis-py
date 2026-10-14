@@ -89,15 +89,24 @@ guard = DidisGuard(
     require_pins=True,
 )
 
-@guard.tool("github:create_issue", definition=lambda: current_tools["github:create_issue"])
+@guard.tool(
+    "github_create_issue",                 # the name in tools/list (pin key)
+    definition=lambda: current_tools["github_create_issue"],
+    capability="github:create_issue",      # what the delegation must grant
+)
 def create_issue(title: str, body: str) -> dict:
     return github.create_issue(title, body)
 ```
 
+**Tool name vs capability.** MCP and OpenAI tool names may only contain letters, digits, `_`, `-` and `.`, so a tool cannot be called `github:create_issue`. DID.is capabilities use `:` namespaces so that `github:*` can grant a whole group. Pass both: the tool name is used for the pin and error messages, `capability` is what DID.is is asked about. Without `capability`, the tool name is used. A capability must be exact (no `*`, no empty segments, no spaces); an invalid one raises `GUARD_MISCONFIGURED` before any network call. Since 0.2.1.
+
+Guarding MCP clients (`mcp` 2.x), LangChain and the OpenAI Agents SDK: see [`examples/`](examples/) and [Guard agent tools](https://docs.did.is/build/guard-tools/#use-with-mcp-and-agent-frameworks).
+
 - The definition check is local (RFC 8785 JCS + SHA-256, the same `definitionSha256` DID.is reports) and makes no network call.
 - The delegation check calls `verify_tool`. An ALLOW is reused for 30 s by default (`allow_cache_seconds`), never past the delegation expiry; DENY and errors are never cached.
 - Error codes: `TOOL_DRIFT`, `TOOL_DEFINITION_MISSING`, `TOOL_NOT_AUTHORIZED`, `GUARD_UNAVAILABLE`, `GUARD_MISCONFIGURED`.
-- One tool only: `@didis_guard(client, agent, "github:create_issue", root, pin=..., definition=...)`. With `AsyncDidisClient` use `AsyncDidisGuard` (or `didis_guard`, which picks it automatically) on `async def` functions.
+- One tool only: `@didis_guard(client, agent, "github_create_issue", root, capability="github:create_issue", pin=..., definition=...)`. With `AsyncDidisClient` use `AsyncDidisGuard` (or `didis_guard`, which picks it automatically) on `async def` functions.
+- `on_decision` and `DidisGuardError.detail` include both `tool` and `capability`.
 - `attest_mcp_pins(client, endpoint, pins)` asks DID.is to inspect a public MCP server and compares its hashes with your pins. Run it at startup or deploy time, not per call: it is an outbound, rate-limited request, and servers that need login or run on a private network cannot be inspected.
 
 ## Webhooks
