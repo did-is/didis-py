@@ -32,6 +32,7 @@ from .types import (
     ResolutionResult,
     SemanticDiff,
     ToolAuthorization,
+    ClaimRequirement,
     CredentialVerification,
 )
 
@@ -191,11 +192,15 @@ class DidisClient:
         expected_audience: Optional[str] = None,
         expected_nonce: Optional[str] = None,
         trusted_issuer_certificates: Optional[List[str]] = None,
+        required_claims: Optional[List[ClaimRequirement]] = None,
     ) -> CredentialVerification:
         """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity.
 
         SD-JWT VC: ``expected_nonce`` constrains the Key Binding JWT; ``trusted_issuer_certificates``
         (PEM or base64 DER) are the only anchors for ``x5c`` chains; without them ``x5c`` is never VALID.
+
+        ``required_claims`` (e.g. ``[{"path": "/age_over_18", "equals": True}]``) are checked against
+        issuer-signed claims of a VALID credential; ``result["requirements"]`` never contains values.
         """
         body: JSON = {"credential": credential}
         if expected_audience is not None:
@@ -204,6 +209,8 @@ class DidisClient:
             body["expectedNonce"] = expected_nonce
         if trusted_issuer_certificates is not None:
             body["trustedIssuerCertificates"] = list(trusted_issuer_certificates)
+        if required_claims is not None:
+            body["requiredClaims"] = [dict(r) for r in required_claims]
         return cast(CredentialVerification, _raise_for_problem(self._client.post("/v1/credentials/verify", json=body)))
 
     def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:
@@ -315,11 +322,15 @@ class AsyncDidisClient:
         expected_audience: Optional[str] = None,
         expected_nonce: Optional[str] = None,
         trusted_issuer_certificates: Optional[List[str]] = None,
+        required_claims: Optional[List[ClaimRequirement]] = None,
     ) -> CredentialVerification:
         """Check JWT audience only when a recipient is supplied; raw JSON strings preserve member identity.
 
         SD-JWT VC: ``expected_nonce`` constrains the Key Binding JWT; ``trusted_issuer_certificates``
         (PEM or base64 DER) are the only anchors for ``x5c`` chains; without them ``x5c`` is never VALID.
+
+        ``required_claims`` (e.g. ``[{"path": "/age_over_18", "equals": True}]``) are checked against
+        issuer-signed claims of a VALID credential; ``result["requirements"]`` never contains values.
         """
         body: JSON = {"credential": credential}
         if expected_audience is not None:
@@ -328,6 +339,8 @@ class AsyncDidisClient:
             body["expectedNonce"] = expected_nonce
         if trusted_issuer_certificates is not None:
             body["trustedIssuerCertificates"] = list(trusted_issuer_certificates)
+        if required_claims is not None:
+            body["requiredClaims"] = [dict(r) for r in required_claims]
         return cast(CredentialVerification, _raise_for_problem(await self._client.post("/v1/credentials/verify", json=body)))
 
     async def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:

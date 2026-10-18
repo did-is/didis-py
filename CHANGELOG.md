@@ -4,6 +4,12 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-18
+
+### Added
+
+- `verify_credential(..., required_claims=[{"path": "/age_over_18", "equals": True}])`: check conditions without receiving claim values. The response key `requirements` reports `met` and a per-path result; conditions are evaluated only for a `VALID` credential. New types `ClaimRequirement`, `RequirementResult`, `RequirementsOutcome`.
+
 ## [0.2.1] - 2026-10-14
 
 ### Added
@@ -41,7 +47,8 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/did-is/didis-py/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/did-is/didis-py/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/did-is/didis-py/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/did-is/didis-py/releases/tag/v0.1.0

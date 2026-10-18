@@ -7,7 +7,7 @@ are typed as ``str`` because the server may add new states in a minor release.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, NotRequired, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, NotRequired, Optional, Tuple, TypedDict, Union
 
 DimensionState = Literal["ESTABLISHED", "SELF_CERTIFYING", "NOT_ESTABLISHED", "FAILED", "INDETERMINATE", "NOT_APPLICABLE"]
 
@@ -226,6 +226,25 @@ class SdJwtEvidence(TypedDict):
     keyBinding: Literal["VERIFIED", "ABSENT", "INVALID", "UNSUPPORTED", "INDETERMINATE"]
 
 
+class ClaimRequirement(TypedDict):
+    """A condition on an issuer-signed claim: JSON Pointer ``path`` equals ``equals``."""
+
+    path: str
+    equals: Union[bool, int, str]
+
+
+class RequirementResult(TypedDict):
+    path: str
+    result: Literal["SATISFIED", "NOT_SATISFIED", "NOT_DISCLOSED", "NOT_EVALUATED"]
+
+
+class RequirementsOutcome(TypedDict):
+    """``met`` is True only when the credential is VALID and every condition is SATISFIED."""
+
+    met: bool
+    results: List[RequirementResult]
+
+
 class CredentialVerification(TypedDict):
     status: str
     headline: str
@@ -244,6 +263,7 @@ class CredentialVerification(TypedDict):
     issuerResolution: NotRequired[Dict[str, Any]]
     issuerTrust: NotRequired["IssuerTrust"]
     sdJwt: NotRequired["SdJwtEvidence"]
+    requirements: NotRequired["RequirementsOutcome"]
     claims: Any
     credential: Any
     limitations: List[str]

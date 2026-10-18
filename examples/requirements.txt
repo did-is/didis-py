@@ -1,4 +1,4 @@
-didis-py>=0.2.1
+didis-py>=0.2.2
 cryptography>=42      # examples only: Ed25519 signing for the demo delegation receipts
 mcp>=2.3              # mcp_client.py
 langchain-core>=1.0   # langchain_tool.py

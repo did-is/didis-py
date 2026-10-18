@@ -41,4 +41,4 @@ __all__ = [
     "mcp_inventory_hash",
     "pin_tool_definitions",
 ]
-__version__ = "0.2.1"
+__version__ = "0.2.2"
