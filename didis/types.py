@@ -77,12 +77,25 @@ class DomainBindingEvidence(TypedDict):
     detail: str
 
 
+class LinkedAccountEvidence(TypedDict):
+    """One ``alsoKnownAs`` value checked for a reciprocal link back to the DID."""
+
+    value: str
+    kind: str  # WEB_ORIGIN | WEB_PAGE | SAME_ORIGIN | DID | OTHER
+    origin: NotRequired[str]
+    status: str  # CONFIRMED | NOT_CONFIRMED | FAILED | UNSUPPORTED | UNREACHABLE | NOT_CHECKABLE
+    configurationStatus: NotRequired[str]
+    configurationSha256: NotRequired[str]
+    detail: str
+
+
 class Evidence(TypedDict):
     source: Dict[str, Any]
     document: Dict[str, Any]
     keys: List[KeyEvidence]
     services: List[Dict[str, Any]]
     domainBinding: NotRequired[DomainBindingEvidence]
+    linkedAccounts: NotRequired[List[LinkedAccountEvidence]]
     tls: NotRequired[Dict[str, Any]]
     history: NotRequired[Dict[str, Any]]
 
@@ -280,6 +293,7 @@ class PolicyRules(TypedDict, total=False):
     requireKeyRelationship: str
     domainBinding: Literal["required", "optional"]
     tlsMinDaysRemaining: int
+    linkedAccounts: List[str]
     verifiableHistory: Literal["required"]
     maxCacheAgeSeconds: int
     credentialStatus: Literal["active"]

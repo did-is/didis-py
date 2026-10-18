@@ -15,6 +15,12 @@ from urllib.parse import quote
 
 import httpx
 
+from ._version import __version__ as _VERSION
+
+# Identifies the SDK to the API so DID.is can count SDK use apart from other HTTP clients.
+# Only product names and versions are sent.
+_USER_AGENT = f"didis-py/{_VERSION} python-httpx/{httpx.__version__}"
+
 from .types import (
     A2aInspection,
     AuthorizationResponse,
@@ -141,7 +147,7 @@ class DidisClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json"})
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:
@@ -271,7 +277,7 @@ class AsyncDidisClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json"})
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:

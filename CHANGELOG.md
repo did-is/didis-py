@@ -4,6 +4,16 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-18
+
+### Added
+
+- Requests now carry `user-agent: didis-py/<version> python-httpx/<version>`. Only package names and versions are sent, so DID.is can count SDK use separately from other HTTP clients.
+
+- Type `LinkedAccountEvidence` and `Evidence.linkedAccounts`: each `alsoKnownAs` value with whether that website links back to the DID (`CONFIRMED`, `NOT_CONFIRMED`, `FAILED`, `UNSUPPORTED`, `UNREACHABLE`, `NOT_CHECKABLE`). A confirmation proves the same party controls the website origin and the DID; it does not prove who that party is.
+
+- Policy rule `linkedAccounts` in `PolicyRules`: 1–4 https origins (for example `["https://shop.example"]`) that must be listed in the DID's `alsoKnownAs` and confirm the DID back. Use it to require "this DID belongs to our official website" in one policy call.
+
 ## [0.2.2] - 2026-10-18
 
 ### Added
@@ -47,7 +57,8 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/did-is/didis-py/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/did-is/didis-py/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/did-is/didis-py/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/did-is/didis-py/compare/v0.1.0...v0.2.0
