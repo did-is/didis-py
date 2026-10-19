@@ -69,6 +69,8 @@ async def main() -> None:
 
 Identifiers are percent-encoded exactly once (`quote(did, safe="")`). Non-2xx responses raise `DidisError` with the RFC 9457 problem body.
 
+**Rate limits.** When the public budget is used up the API answers `429` with `Retry-After`. The client waits that long and retries (up to 2 times, at most 10 s per wait), so a loop of calls slows down instead of failing. Tune with `DidisClient(retry={"max_retries": 3, "max_wait": 5})` or turn it off with `retry=False`.
+
 ## Guard agent tools
 
 A guarded tool function runs only when (1) the tool definition the agent received still matches the one you approved and (2) DID.is says the agent's registered delegation grants the tool. Every failure raises `DidisGuardError` and the function does not run (fail-closed).

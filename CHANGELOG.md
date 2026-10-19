@@ -4,6 +4,12 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-19
+
+### Added
+
+- Automatic wait-and-retry for `429` (request budget used up) and `503` (temporarily overloaded) responses that carry `Retry-After`, in `DidisClient` and `AsyncDidisClient`. By default the client retries up to 2 times and never waits longer than 10 seconds per attempt; a short random delay is added so clients refused together do not return together. Both statuses are refused before the request is processed, so retrying is safe for every call. Tune with `DidisClient(retry={"max_retries": 3, "max_wait": 5})` or turn off with `retry=False`. When retries run out, `DidisError` is raised as before, with `problem["retryAfter"]`.
+
 ## [0.2.3] - 2026-10-18
 
 ### Added
@@ -57,7 +63,8 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/did-is/didis-py/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/did-is/didis-py/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/did-is/didis-py/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/did-is/didis-py/compare/v0.2.0...v0.2.1

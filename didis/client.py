@@ -9,7 +9,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import asyncio
+import random
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, cast
 from urllib.parse import quote
 
@@ -73,6 +76,77 @@ def _raise_for_problem(resp: httpx.Response) -> JSON:
     if retry_after is not None:
         problem["retryAfter"] = retry_after
     raise DidisError(resp.status_code, problem)
+
+
+def retry_after_seconds(value: Optional[str], now: Optional[float] = None) -> Optional[float]:
+    """Seconds to wait from a ``Retry-After`` value (delta-seconds or HTTP-date); None if unusable."""
+    if not value:
+        return None
+    v = value.strip()
+    if v.isdigit():
+        return float(v)
+    try:
+        at = parsedate_to_datetime(v).timestamp()
+    except (TypeError, ValueError, IndexError):
+        return None
+    return max(0.0, at - (time.time() if now is None else now))
+
+
+class _RetryPolicy:
+    """Wait-and-retry for 429 (request budget used up) and 503 (temporarily overloaded).
+
+    Both are refused before the request is processed, so a retry is safe for every call.
+    Retries only when the server sends ``Retry-After`` and the wait is within ``max_wait``.
+    """
+
+    def __init__(self, retry: Any) -> None:
+        if retry is False:
+            self.max_retries, self.max_wait = 0, 0.0
+        else:
+            cfg = retry if isinstance(retry, dict) else {}
+            self.max_retries = max(0, int(cfg.get("max_retries", 2)))
+            self.max_wait = max(0.0, float(cfg.get("max_wait", 10.0)))
+
+    def wait_for(self, attempt: int, resp: httpx.Response) -> Optional[float]:
+        if attempt >= self.max_retries or resp.status_code not in (429, 503):
+            return None
+        wait = retry_after_seconds(resp.headers.get("retry-after"))
+        if wait is None or wait > self.max_wait:
+            return None
+        # A small random delay spreads out clients refused at the same moment.
+        return wait + random.random() * 0.25
+
+    def wrap_sync(self, client: httpx.Client) -> None:
+        send = client.send
+
+        def retrying(request: httpx.Request, **kwargs: Any) -> httpx.Response:
+            attempt = 0
+            while True:
+                resp = send(request, **kwargs)
+                wait = self.wait_for(attempt, resp)
+                if wait is None:
+                    return resp
+                resp.close()
+                time.sleep(wait)
+                attempt += 1
+
+        client.send = retrying  # type: ignore[method-assign]
+
+    def wrap_async(self, client: httpx.AsyncClient) -> None:
+        send = client.send
+
+        async def retrying(request: httpx.Request, **kwargs: Any) -> httpx.Response:
+            attempt = 0
+            while True:
+                resp = await send(request, **kwargs)
+                wait = self.wait_for(attempt, resp)
+                if wait is None:
+                    return resp
+                await resp.aclose()
+                await asyncio.sleep(wait)
+                attempt += 1
+
+        client.send = retrying  # type: ignore[method-assign]
 
 
 class _SseParser:
@@ -142,12 +216,18 @@ def verify_customer_monitor_signature(secret: str, body: bytes, signature: str, 
 
 
 class DidisClient:
-    """Synchronous client."""
+    """Synchronous client.
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0):
+    ``retry``: on 429/503 with ``Retry-After`` the client waits and retries, by default up to
+    2 times and never longer than 10 s per wait. Pass ``{"max_retries": n, "max_wait": s}``
+    to tune it or ``False`` to turn it off.
+    """
+
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
+        _RetryPolicy(retry).wrap_sync(self._client)
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:
@@ -272,12 +352,13 @@ class DidisClient:
 
 
 class AsyncDidisClient:
-    """Asynchronous client (same surface as ``DidisClient``)."""
+    """Asynchronous client (same surface as ``DidisClient``, including ``retry``)."""
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0):
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
+        _RetryPolicy(retry).wrap_async(self._client)
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:
