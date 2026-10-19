@@ -12,6 +12,7 @@ import json
 import asyncio
 import random
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, cast
 from urllib.parse import quote
@@ -43,12 +44,18 @@ from .types import (
     ToolAuthorization,
     ClaimRequirement,
     CredentialVerification,
+    CustomerUsage,
 )
 
 DEFAULT_BASE_URL = "https://did.is/api"
 """Public DID.is API. Pass your own ``base_url`` when self-hosting."""
 
 JSON = Dict[str, Any]
+
+
+def _paid_body(**fields: Any) -> JSON:
+    """Paid routes reject unknown and null members; send only the fields that are set."""
+    return {k: v for k, v in fields.items() if v is not None}
 
 
 def _enc(value: str) -> str:
@@ -221,13 +228,27 @@ class DidisClient:
     ``retry``: on 429/503 with ``Retry-After`` the client waits and retries, by default up to
     2 times and never longer than 10 s per wait. Pass ``{"max_retries": n, "max_wait": s}``
     to tune it or ``False`` to turn it off.
+
+    ``api_key``: optional project API key from the DID.is console. With a key, ``inspect_mcp``,
+    ``inspect_a2a``, ``authorize`` and ``verify_delegation`` use the paid ``/v1/customer/*`` routes
+    and count against the team's monthly allowance instead of the anonymous per-IP limit. Results
+    are identical. The key is never sent to public routes. Keep it server-side.
     """
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None):
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
+        self._api_key = api_key or None
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
         _RetryPolicy(retry).wrap_sync(self._client)
+
+    def _paid_headers(self, post: bool = True) -> Dict[str, str]:
+        # One fresh Idempotency-Key per call; automatic 429/503 retries resend the same request,
+        # so the same key is reused and a request is never billed twice.
+        h = {"authorization": f"Bearer {self._api_key}"}
+        if post:
+            h["idempotency-key"] = str(uuid.uuid4())
+        return h
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:
@@ -305,16 +326,31 @@ class DidisClient:
             body["credential"] = credential
         return cast(PolicyResponse, _raise_for_problem(self._client.post("/v1/policies/evaluate", json=body)))
 
+    def usage(self) -> CustomerUsage:
+        """This month's team allowance (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for usage()")
+        return cast(CustomerUsage, _raise_for_problem(self._client.get("/v1/customer/usage", headers=self._paid_headers(False))))
+
     def inspect_mcp(self, endpoint: str) -> McpInspection:
+        if self._api_key:
+            return cast(McpInspection, _raise_for_problem(self._client.post("/v1/customer/mcp/inspect", json={"endpoint": endpoint}, headers=self._paid_headers())))
         return cast(McpInspection, _raise_for_problem(self._client.get("/v1/mcp/inspect", params={"endpoint": endpoint})))
 
     def inspect_a2a(self, url: str) -> A2aInspection:
+        if self._api_key:
+            return cast(A2aInspection, _raise_for_problem(self._client.post("/v1/customer/a2a/inspect", json={"url": url}, headers=self._paid_headers())))
         return cast(A2aInspection, _raise_for_problem(self._client.get("/v1/a2a/inspect", params={"url": url})))
 
     def verify_delegation(self, chain: List[str], trusted_roots: Optional[List[str]] = None, register: bool = False) -> DelegationVerification:
+        """``register=True`` always uses the public route (the paid route never writes shared state)."""
+        if self._api_key and not register:
+            return cast(DelegationVerification, _raise_for_problem(self._client.post("/v1/customer/agents/verify-delegation", json=_paid_body(chain=chain, trustedRoots=trusted_roots), headers=self._paid_headers())))
         return cast(DelegationVerification, _raise_for_problem(self._client.post("/v1/agents/verify-delegation", json={"chain": chain, "trustedRoots": trusted_roots, "register": register})))
 
     def authorize(self, chain: List[str], tool: str, trusted_roots: Optional[List[str]] = None) -> AuthorizationResponse:
+        if self._api_key:
+            return cast(AuthorizationResponse, _raise_for_problem(self._client.post("/v1/customer/agents/authorize", json=_paid_body(chain=chain, tool=tool, trustedRoots=trusted_roots), headers=self._paid_headers())))
         return cast(AuthorizationResponse, _raise_for_problem(self._client.post("/v1/agents/authorize", json={"chain": chain, "tool": tool, "trustedRoots": trusted_roots})))
 
     def verify_tool(self, agent: str, tool: str, root: Optional[str] = None) -> ToolAuthorization:
@@ -354,11 +390,20 @@ class DidisClient:
 class AsyncDidisClient:
     """Asynchronous client (same surface as ``DidisClient``, including ``retry``)."""
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None):
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, admin_token: Optional[str] = None, timeout: float = 30.0, retry: Any = None, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self._admin_token = admin_token
+        self._api_key = api_key or None
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers={"accept": "application/json", "user-agent": _USER_AGENT})
         _RetryPolicy(retry).wrap_async(self._client)
+
+    def _paid_headers(self, post: bool = True) -> Dict[str, str]:
+        # One fresh Idempotency-Key per call; automatic 429/503 retries resend the same request,
+        # so the same key is reused and a request is never billed twice.
+        h = {"authorization": f"Bearer {self._api_key}"}
+        if post:
+            h["idempotency-key"] = str(uuid.uuid4())
+        return h
 
     def _admin(self) -> Dict[str, str]:
         if not self._admin_token:
@@ -436,16 +481,31 @@ class AsyncDidisClient:
             body["credential"] = credential
         return cast(PolicyResponse, _raise_for_problem(await self._client.post("/v1/policies/evaluate", json=body)))
 
+    async def usage(self) -> CustomerUsage:
+        """This month's team allowance (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for usage()")
+        return cast(CustomerUsage, _raise_for_problem(await self._client.get("/v1/customer/usage", headers=self._paid_headers(False))))
+
     async def inspect_mcp(self, endpoint: str) -> McpInspection:
+        if self._api_key:
+            return cast(McpInspection, _raise_for_problem(await self._client.post("/v1/customer/mcp/inspect", json={"endpoint": endpoint}, headers=self._paid_headers())))
         return cast(McpInspection, _raise_for_problem(await self._client.get("/v1/mcp/inspect", params={"endpoint": endpoint})))
 
     async def inspect_a2a(self, url: str) -> A2aInspection:
+        if self._api_key:
+            return cast(A2aInspection, _raise_for_problem(await self._client.post("/v1/customer/a2a/inspect", json={"url": url}, headers=self._paid_headers())))
         return cast(A2aInspection, _raise_for_problem(await self._client.get("/v1/a2a/inspect", params={"url": url})))
 
     async def verify_delegation(self, chain: List[str], trusted_roots: Optional[List[str]] = None, register: bool = False) -> DelegationVerification:
+        """``register=True`` always uses the public route (the paid route never writes shared state)."""
+        if self._api_key and not register:
+            return cast(DelegationVerification, _raise_for_problem(await self._client.post("/v1/customer/agents/verify-delegation", json=_paid_body(chain=chain, trustedRoots=trusted_roots), headers=self._paid_headers())))
         return cast(DelegationVerification, _raise_for_problem(await self._client.post("/v1/agents/verify-delegation", json={"chain": chain, "trustedRoots": trusted_roots, "register": register})))
 
     async def authorize(self, chain: List[str], tool: str, trusted_roots: Optional[List[str]] = None) -> AuthorizationResponse:
+        if self._api_key:
+            return cast(AuthorizationResponse, _raise_for_problem(await self._client.post("/v1/customer/agents/authorize", json=_paid_body(chain=chain, tool=tool, trustedRoots=trusted_roots), headers=self._paid_headers())))
         return cast(AuthorizationResponse, _raise_for_problem(await self._client.post("/v1/agents/authorize", json={"chain": chain, "tool": tool, "trustedRoots": trusted_roots})))
 
     async def verify_tool(self, agent: str, tool: str, root: Optional[str] = None) -> ToolAuthorization:

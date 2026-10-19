@@ -468,3 +468,17 @@ class FastVerifyJwsResult(TypedDict):
     signingInputSha256: NotRequired[str]
     signer: NotRequired[str]
     relationship: NotRequired[str]
+
+
+class CustomerUsage(TypedDict):
+    """``GET /v1/customer/usage``: this month's team allowance (all the team's projects share it)."""
+
+    period: str
+    standardUsed: int
+    standardReserved: int
+    standardLimit: int
+    standardRemaining: int
+    expensiveUsed: int
+    expensiveReserved: int
+    expensiveLimit: int
+    expensiveRemaining: int

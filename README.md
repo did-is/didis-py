@@ -71,6 +71,8 @@ Identifiers are percent-encoded exactly once (`quote(did, safe="")`). Non-2xx re
 
 **Rate limits.** When the public budget is used up the API answers `429` with `Retry-After`. The client waits that long and retries (up to 2 times, at most 10 s per wait), so a loop of calls slows down instead of failing. Tune with `DidisClient(retry={"max_retries": 3, "max_wait": 5})` or turn it off with `retry=False`.
 
+**Project API key (optional).** Every check works without a key. A team that needs more than the anonymous per-IP limit can create a key in the DID.is console (Free plan included) and pass it: `DidisClient(api_key=os.environ["DIDIS_API_KEY"])`. Then `inspect_mcp`, `inspect_a2a`, `authorize` and `verify_delegation` use the `/v1/customer/*` routes and count against the team's monthly allowance; results are identical. Each call sends one fresh `Idempotency-Key` (retries reuse it, so nothing is billed twice). `didis.usage()` shows the allowance left. Keep the key server-side; it is never sent to public routes.
+
 ## Guard agent tools
 
 A guarded tool function runs only when (1) the tool definition the agent received still matches the one you approved and (2) DID.is says the agent's registered delegation grants the tool. Every failure raises `DidisGuardError` and the function does not run (fail-closed).

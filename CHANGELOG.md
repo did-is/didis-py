@@ -4,6 +4,13 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-19
+
+### Added
+
+- Optional project API key: `DidisClient(api_key=...)` / `AsyncDidisClient(api_key=...)`. With a key, MCP inspection, A2A inspection, tool-call authorization and delegation-chain checks use the paid `/v1/customer/*` routes and count against your team's monthly allowance instead of the anonymous per-IP limit. Results are identical to the public routes. Each call sends one fresh `Idempotency-Key`; automatic `429`/`503` retries reuse it, so a request is never billed twice. The key is never sent to public routes, and `register: true` delegation checks always use the public route. Without a key nothing changes.
+- `usage()` returns this month's team allowance (`CustomerUsage`: used, reserved, limit and remaining per pool). Requires the API key.
+
 ## [0.2.4] - 2026-10-19
 
 ### Added
@@ -63,7 +70,8 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/did-is/didis-py/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/did-is/didis-py/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/did-is/didis-py/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/did-is/didis-py/compare/v0.2.1...v0.2.2
