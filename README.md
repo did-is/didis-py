@@ -10,6 +10,16 @@ The distribution is `didis-py`; the import name is `didis`.
 pip install didis-py
 ```
 
+## Runnable MCP examples
+
+Start with [DID.is MCP examples](https://github.com/did-is/mcp-examples) for three separate jobs:
+
+- [Connect your MCP client to DID.is](https://github.com/did-is/mcp-examples/tree/main/examples/00-connect-didis) — an opt-in round trip to the existing read-only server; connecting it does not protect your other tools.
+- [Inspect a public MCP server](https://github.com/did-is/mcp-examples/tree/main/examples/01-inspect-public-server) — offline evidence first, then an explicit live inspection of a server you own or have permission to inspect.
+- [Block calls after approved definitions change](https://github.com/did-is/mcp-examples/tree/main/examples/02-block-definition-drift) — an offline TypeScript execution boundary using the public SDK fingerprint helpers, not delegation authorization or the full SDK guard.
+
+Default demos need no DID.is account, API key, or LLM key. The inspection example also has a [Python mirror](https://github.com/did-is/mcp-examples/tree/main/python/01-inspect-public-server). Host subscriptions and optional live calls are separate. [See the actual recorded run and the code boundary](https://github.com/did-is/mcp-examples/blob/main/docs/demo.md).
+
 ## Usage
 
 ```python
