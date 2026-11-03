@@ -4,6 +4,17 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-03
+
+### Fixed
+
+- Correct first-party license attribution to DID.is; MIT permission and disclaimer terms are unchanged.
+
+### Migration
+
+- This release includes the execution-guard hardening and response types described under 0.2.6 below. **Upgrading from 0.2.5 is not a backward-compatible patch:** configure an application-owned trusted root for every guard; TypeScript requires `root` statically and Python enforces it at runtime with `GUARD_MISCONFIGURED`. Never derive the trusted root from submitted chains or model output. Expired approval, awaited-definition and immutable-deadline checks remain enforced; definition pins do not authorize callers or guarantee tool behavior.
+- Python 0.2.6 was published. 0.2.7 retains its runtime behavior and corrects the packaged license attribution.
+
 ## [0.2.6] - 2026-11-03
 
 ### Fixed
@@ -88,7 +99,7 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.7...HEAD
 [0.2.6]: https://github.com/did-is/didis-py/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/did-is/didis-py/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/did-is/didis-py/compare/v0.2.3...v0.2.4
@@ -97,3 +108,5 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 [0.2.1]: https://github.com/did-is/didis-py/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/did-is/didis-py/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/did-is/didis-py/releases/tag/v0.1.0
+
+[0.2.7]: https://github.com/did-is/didis-py/compare/v0.2.6...v0.2.7
