@@ -1,8 +1,26 @@
 # Changelog
 
-All notable changes to `didis-py` (import name `didis`) are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses [Semantic Versioning](https://semver.org/). Before 1.0.0, a minor version (0.x.0) may add features; breaking changes are called out under **Changed** with a migration note.
+All notable changes to `didis-py` (import name `didis`) are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and release numbering follows the project’s pre-1.0 policy. A third-component increment can contain breaking changes; read **Changed** and migration notes before upgrading. 0.2.6 is not a backward-compatible patch.
 
 ## [Unreleased]
+
+## [0.2.6] - 2026-11-03
+
+### Fixed
+
+- `DidisGuard` / `AsyncDidisGuard` / `didis_guard`: reject an ALLOW whose parseable `expires` is at or before execution time with the existing `TOOL_NOT_AUTHORIZED` code, including first use and disabled caching. Re-read pinned definitions after authorization and recheck each call's immutable deadline after async work and immediately before handler invocation; concurrent refreshes cannot extend another call's approval. Cached ALLOW is still bounded by both configured TTL and delegation expiry; failed/DENY/expired refreshes never fall back to stale approval (`GUARD_UNAVAILABLE` for transport/unexpected-answer errors). Missing/unparseable expiry remains optional and keeps the existing TTL-only behavior. Pin providers may now run twice per check. This is a pre-execution boundary, not per-stream reauthorization, resource binding, replay prevention, or an atomic remote side-effect guarantee.
+
+### Changed
+
+- **Breaking in 0.2.6:** execution guards require a nonempty, trimmed application-owned trusted root DID. Missing/null/empty/whitespace roots raise `GUARD_MISCONFIGURED` at construction, before network or handler work. Migrate every guard and one-line wrapper by passing the root from trusted application configuration, not from a submitted chain, authorization response, or model output. Rootless advisory verification APIs remain available; signature-valid does not mean application-authorized. 0.2.5 accepts rootless guards; 0.2.6 rejects them. TypeScript requires `root` statically; Python retains its Optional annotation but enforces it at runtime.
+
+- Correct delegation response fields to required nullable wire values; correct fast-verification explicit null fields. Include optional key material metadata and type graph fact pairs as JSON arrays. Wire-type corrections only; these corrections do not alter HTTP routing.
+
+### Added
+
+- Add optional tools-only inventory completeness/evidence (missing means unknown); scoped requested-pin attestation preserves partial-result pin checks and rejects duplicate ambiguity. Missing completeness remains unknown, not complete.
+
+- sync/async `diff_observations()` selects exact public history observations, including domain-only changes with identical document hashes. Semantic diff adds optional `fromObservation`/`toObservation` references. Legacy hash selectors remain available but ambiguous hashes return `INVALID_REQUEST` instead of silently selecting a different state. No change to private usage/billing routes.
 
 ## [0.2.5] - 2026-10-19
 
@@ -70,7 +88,8 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/did-is/didis-py/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/did-is/didis-py/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/did-is/didis-py/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/did-is/didis-py/compare/v0.2.2...v0.2.3

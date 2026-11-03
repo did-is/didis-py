@@ -6,7 +6,14 @@ Before a guarded tool function runs, the guard checks:
    the SHA-256 you approved (the same RFC 8785 JCS hash DID.is reports as ``definitionSha256``).
 2. Delegation (DID.is ``verify-tool``): the configured agent DID holds a registered, VALID
    delegation whose leaf capabilities grant the tool's capability. ALLOW is cached briefly;
-   DENY and errors are never cached.
+   DENY and errors are never cached. A parseable ``expires`` is an exclusive deadline:
+   stale ALLOW raises ``TOOL_NOT_AUTHORIZED``, even with caching disabled. Missing/unparseable
+   expiry retains the existing optional-field behavior (TTL-only cache).
+
+Pins are re-read after authorization, and a per-call deadline snapshot is checked immediately
+before invoking decorated functions. Pinned providers may run twice per check.
+This is not ongoing stream authorization or an atomic
+transaction with a remote tool's side effects.
 
 Tool name vs capability: MCP tool names may only use ``A-Z a-z 0-9 _ - .`` (SEP-986), while
 DID.is capabilities are namespaced with ``:`` (e.g. ``weather:forecast``). Pass both when they
@@ -146,25 +153,32 @@ def pin_tool_definitions(tools: List[Mapping[str, Any]]) -> Dict[str, str]:
 
 Definition = Any  # a definition mapping, or a zero-argument callable returning one
 DecisionHook = Callable[[Dict[str, Any]], None]
+# Immutable per-call (monotonic cache deadline, wall-clock delegation expiry).
+_Ticket = tuple[float, float]
 
 
 class _GuardCore:
     def __init__(self, agent: str, root: Optional[str], pins: Optional[Mapping[str, str]], require_pins: bool, allow_cache_seconds: float, on_decision: Optional[DecisionHook]):
         if not isinstance(agent, str) or not _DID.match(agent):
             raise DidisGuardError("GUARD_MISCONFIGURED", "", "agent must be a DID")
-        if root is not None and (not isinstance(root, str) or not _DID.match(root)):
-            raise DidisGuardError("GUARD_MISCONFIGURED", "", "root must be a DID")
+        if not isinstance(root, str) or root != root.strip() or not _DID.fullmatch(root):
+            raise DidisGuardError("GUARD_MISCONFIGURED", "", "an application-owned trusted root DID is required")
         if not isinstance(allow_cache_seconds, (int, float)) or not math.isfinite(allow_cache_seconds) or allow_cache_seconds < 0:
             raise DidisGuardError("GUARD_MISCONFIGURED", "", "allow_cache_seconds must be >= 0")
         self.pins = dict(pins or {})
         for name, pin in self.pins.items():
             if not isinstance(pin, str) or not _HEX64.match(pin):
                 raise DidisGuardError("GUARD_MISCONFIGURED", name, "pins must be lowercase hex SHA-256")
-        self.agent, self.root, self.require_pins = agent, root, require_pins
+        self.agent, self._root, self.require_pins = agent, root, require_pins
         self.allow_cache_seconds = float(allow_cache_seconds)
         self.on_decision = on_decision
-        self._allowed: Dict[str, float] = {}
+        self._allowed: Dict[str, _Ticket] = {}
         self._lock = threading.Lock()
+
+    @property
+    def root(self) -> str:
+        """Captured application trust configuration, not an authorization response value."""
+        return self._root
 
     def _report(self, tool: str, capability: str, allowed: bool, reason: str, cached: bool, code: Optional[str] = None) -> None:
         if self.on_decision is None:
@@ -208,38 +222,44 @@ class _GuardCore:
         if actual != pin:
             raise self.fail("TOOL_DRIFT", tool, capability, f"definition of '{tool}' changed since it was approved", {"expected": pin, "actual": actual})
 
-    def cached(self, tool: str, capability: str) -> bool:
-        with self._lock:
-            until = self._allowed.get(capability)
-            if until is not None and until > time.monotonic():
-                hit = True
-            else:
-                self._allowed.pop(capability, None)
-                hit = False
-        if hit:
-            self._report(tool, capability, True, "cached ALLOW", True)
-        return hit
+    def assert_fresh(self, tool: str, capability: str, ticket: _Ticket) -> None:
+        if ticket[0] <= time.monotonic() or ticket[1] <= time.time():
+            raise self.fail("TOOL_NOT_AUTHORIZED", tool, capability, "authorization expired before execution")
 
-    def accept(self, tool: str, capability: str, auth: Any) -> None:
+    def cached(self, tool: str, capability: str) -> Optional[_Ticket]:
+        with self._lock:
+            ticket = self._allowed.get(capability)
+            if ticket is None or ticket[0] <= time.monotonic() or ticket[1] <= time.time():
+                self._allowed.pop(capability, None)
+                ticket = None
+        if ticket is not None:
+            self._report(tool, capability, True, "cached ALLOW", True)
+        return ticket
+
+    def accept(self, tool: str, capability: str, auth: Any) -> _Ticket:
         exact = isinstance(auth, Mapping) and auth.get("decision") == "ALLOW" and auth.get("authorized") is True and auth.get("agent") == self.agent and auth.get("tool") == capability
         if not exact:
             if isinstance(auth, Mapping) and (auth.get("decision") == "DENY" or auth.get("authorized") is False):
                 raise self.fail("TOOL_NOT_AUTHORIZED", tool, capability, str(auth.get("reason") or "delegation does not grant this capability"), {"matchedCapability": auth.get("matchedCapability")})
             raise self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is returned an unexpected authorization answer")
-        if self.root is not None and auth.get("root") != self.root:
+        if auth.get("root") != self.root:
             raise self.fail("TOOL_NOT_AUTHORIZED", tool, capability, "delegation root does not match the configured root")
+        expiry = math.inf
+        expires = auth.get("expires")
+        if isinstance(expires, str):
+            try:
+                expiry = datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp()
+            except (ValueError, OverflowError, OSError):
+                pass  # Existing optional-field contract: malformed expiry uses cache TTL only.
+        ticket = (math.inf, expiry)
+        self.assert_fresh(tool, capability, ticket)
         if self.allow_cache_seconds > 0:
-            ttl = self.allow_cache_seconds
-            expires = auth.get("expires")
-            if isinstance(expires, str):
-                try:
-                    ttl = min(ttl, datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp() - time.time())
-                except ValueError:
-                    pass
+            ttl = min(self.allow_cache_seconds, expiry - time.time())
             if ttl > 0:
                 with self._lock:
-                    self._allowed[capability] = time.monotonic() + ttl
+                    self._allowed[capability] = (time.monotonic() + ttl, expiry)
         self._report(tool, capability, True, str(auth.get("reason", "")), False)
+        return ticket
 
     def unavailable(self, tool: str, capability: str, exc: Exception) -> DidisGuardError:
         status = getattr(exc, "status", None)
@@ -253,7 +273,9 @@ class _GuardCore:
 class DidisGuard:
     """Guard backed by the synchronous :class:`DidisClient`.
 
-    ``agent`` must come from your runtime configuration, never from model output.
+    ``agent`` and the required trusted ``root`` must come from application configuration,
+    never from model output or the submitted delegation. Omitting ``root`` raises
+    ``GUARD_MISCONFIGURED`` at construction, before any network or handler work.
     """
 
     def __init__(self, client: DidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
@@ -268,16 +290,23 @@ class DidisGuard:
         ``tool`` is the name the agent sees (MCP ``tools/list`` name, pin key). ``capability`` is
         the DID.is capability it needs (e.g. ``weather:forecast``); it defaults to ``tool``.
         """
+        self._prepare(tool, definition, capability=capability)
+
+    def _prepare(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> _Ticket:
         core = self._core
         cap = core.resolve_names(tool, capability)
         core.check_definition(tool, cap, definition)
-        if core.cached(tool, cap):
-            return
-        try:
-            auth = self._client.verify_tool(core.agent, cap, core.root)
-        except Exception as exc:
-            raise core.unavailable(tool, cap, exc) from None
-        core.accept(tool, cap, auth)
+        ticket = core.cached(tool, cap)
+        if ticket is None:
+            try:
+                auth = self._client.verify_tool(core.agent, cap, core.root)
+            except Exception as exc:
+                raise core.unavailable(tool, cap, exc) from None
+            ticket = core.accept(tool, cap, auth)
+        if tool in core.pins or core.require_pins:
+            core.check_definition(tool, cap, definition)
+        core.assert_fresh(tool, cap, ticket)
+        return ticket
 
     def tool(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> Callable[[F], F]:
         """Decorator: the function runs only after :meth:`check` passes (sync or async functions)."""
@@ -286,14 +315,16 @@ class DidisGuard:
             if inspect.iscoroutinefunction(func):
                 @functools.wraps(func)
                 async def run_async(*args: Any, **kwargs: Any) -> Any:
-                    self.check(tool, definition, capability=capability)
+                    ticket = self._prepare(tool, definition, capability=capability)
+                    self._core.assert_fresh(tool, tool if capability is None else capability, ticket)
                     return await func(*args, **kwargs)
 
                 return run_async  # type: ignore[return-value]
 
             @functools.wraps(func)
             def run(*args: Any, **kwargs: Any) -> Any:
-                self.check(tool, definition, capability=capability)
+                ticket = self._prepare(tool, definition, capability=capability)
+                self._core.assert_fresh(tool, tool if capability is None else capability, ticket)
                 return func(*args, **kwargs)
 
             return run  # type: ignore[return-value]
@@ -305,7 +336,7 @@ class DidisGuard:
 
 
 class AsyncDidisGuard:
-    """Guard backed by :class:`AsyncDidisClient`; decorates ``async def`` functions only."""
+    """Async execution guard; requires an application-owned root, like :class:`DidisGuard`."""
 
     def __init__(self, client: AsyncDidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
         if not hasattr(client, "verify_tool"):
@@ -313,23 +344,34 @@ class AsyncDidisGuard:
         self._client = client
         self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision)
 
-    async def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
-        core = self._core
-        cap = core.resolve_names(tool, capability)
+    async def _check_definition(self, tool: str, cap: str, definition: Definition) -> None:
         if callable(definition):
             try:
                 got = definition()
                 definition = (await got) if inspect.isawaitable(got) else got
             except Exception:
-                raise core.fail("TOOL_DEFINITION_MISSING", tool, cap, f"could not read the current definition of '{tool}'") from None
-        core.check_definition(tool, cap, definition)
-        if core.cached(tool, cap):
-            return
-        try:
-            auth = await self._client.verify_tool(core.agent, cap, core.root)
-        except Exception as exc:
-            raise core.unavailable(tool, cap, exc) from None
-        core.accept(tool, cap, auth)
+                raise self._core.fail("TOOL_DEFINITION_MISSING", tool, cap, f"could not read the current definition of '{tool}'") from None
+        self._core.check_definition(tool, cap, definition)
+
+    async def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
+        ticket = await self._prepare(tool, definition, capability=capability)
+        self._core.assert_fresh(tool, tool if capability is None else capability, ticket)
+
+    async def _prepare(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> _Ticket:
+        core = self._core
+        cap = core.resolve_names(tool, capability)
+        await self._check_definition(tool, cap, definition)
+        ticket = core.cached(tool, cap)
+        if ticket is None:
+            try:
+                auth = await self._client.verify_tool(core.agent, cap, core.root)
+            except Exception as exc:
+                raise core.unavailable(tool, cap, exc) from None
+            ticket = core.accept(tool, cap, auth)
+        if tool in core.pins or core.require_pins:
+            await self._check_definition(tool, cap, definition)
+        core.assert_fresh(tool, cap, ticket)
+        return ticket
 
     def tool(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> Callable[[F], F]:
         def decorate(func: F) -> F:
@@ -338,7 +380,9 @@ class AsyncDidisGuard:
 
             @functools.wraps(func)
             async def run(*args: Any, **kwargs: Any) -> Any:
-                await self.check(tool, definition, capability=capability)
+                ticket = await self._prepare(tool, definition, capability=capability)
+                # No await between this call's final deadline check and invoking the function.
+                self._core.assert_fresh(tool, tool if capability is None else capability, ticket)
                 return await func(*args, **kwargs)
 
             return run  # type: ignore[return-value]
@@ -365,7 +409,7 @@ def didis_guard(client: Union[DidisClient, AsyncDidisClient], agent: str, tool: 
 
 
 def attest_mcp_pins(client: DidisClient, endpoint: str, pins: Mapping[str, str]) -> Dict[str, Any]:
-    """Optional startup check against DID.is ``inspect_mcp``; ``ok`` is False unless INSPECTED and all pins match."""
+    """Optional startup check against DID.is ``inspect_mcp``; ``ok`` covers requested pins only, even on partial inventory; no all-tools or safety claim."""
     return _attestation(client.inspect_mcp(endpoint), pins)
 
 
@@ -374,11 +418,24 @@ async def attest_mcp_pins_async(client: AsyncDidisClient, endpoint: str, pins: M
 
 
 def _attestation(inspection: Mapping[str, Any], pins: Mapping[str, str]) -> Dict[str, Any]:
-    seen = {t.get("name"): t.get("definitionSha256") for t in inspection.get("tools", [])}
+    seen: Dict[str, Any] = {}
+    ambiguous = set()
+    for tool in inspection.get("tools", []):
+        name = tool.get("name")
+        if not isinstance(name, str):
+            continue
+        if name in seen or name in ambiguous:
+            seen.pop(name, None)
+            ambiguous.add(name)
+        else:
+            seen[name] = tool.get("definitionSha256")
     mismatched = [{"tool": name, "expected": exp, "observed": seen.get(name)} for name, exp in pins.items() if seen.get(name) != exp]
     return {
         "ok": inspection.get("status") == "INSPECTED" and not mismatched,
         "inventoryHash": inspection.get("inventoryHash"),
+        "inventoryComplete": inspection.get("inventoryComplete"),
+        "inventoryEvidence": inspection.get("inventoryEvidence"),
+        "scope": "requested-pins",
         "mismatched": mismatched,
         "unpinned": [n for n in seen if n not in pins],
         "status": inspection.get("status"),

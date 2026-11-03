@@ -289,6 +289,11 @@ class DidisClient:
         params = {"from": from_hash, "to": to_hash} if from_hash and to_hash else None
         return cast(SemanticDiff, _raise_for_problem(self._client.get(f"/v1/diff/{_enc(did)}", params=params)))
 
+    def diff_observations(self, did: str, from_observation: str, to_observation: str) -> SemanticDiff:
+        """Compare exact public history rows (including same-hash domain changes)."""
+        params = {"fromObservation": from_observation, "toObservation": to_observation}
+        return cast(SemanticDiff, _raise_for_problem(self._client.get(f"/v1/diff/{_enc(did)}", params=params)))
+
     def graph(self, did: str) -> GraphResponse:
         return cast(GraphResponse, _raise_for_problem(self._client.get(f"/v1/graph/{_enc(did)}")))
 
@@ -442,6 +447,11 @@ class AsyncDidisClient:
 
     async def diff(self, did: str, from_hash: Optional[str] = None, to_hash: Optional[str] = None) -> SemanticDiff:
         params = {"from": from_hash, "to": to_hash} if from_hash and to_hash else None
+        return cast(SemanticDiff, _raise_for_problem(await self._client.get(f"/v1/diff/{_enc(did)}", params=params)))
+
+    async def diff_observations(self, did: str, from_observation: str, to_observation: str) -> SemanticDiff:
+        """Compare exact public history rows (including same-hash domain changes)."""
+        params = {"fromObservation": from_observation, "toObservation": to_observation}
         return cast(SemanticDiff, _raise_for_problem(await self._client.get(f"/v1/diff/{_enc(did)}", params=params)))
 
     async def graph(self, did: str) -> GraphResponse:

@@ -7,7 +7,7 @@ are typed as ``str`` because the server may add new states in a minor release.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, NotRequired, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, List, Literal, NotRequired, Optional, TypedDict, Union
 
 DimensionState = Literal["ESTABLISHED", "SELF_CERTIFYING", "NOT_ESTABLISHED", "FAILED", "INDETERMINATE", "NOT_APPLICABLE"]
 
@@ -58,6 +58,8 @@ class KeyEvidence(TypedDict):
     type: str
     controller: NotRequired[str]
     controllerIsSubject: bool
+    materialProperty: NotRequired[str]
+    multicodec: NotRequired[Dict[str, Any]]
     relationships: List[str]
     status: str
     curve: NotRequired[str]
@@ -108,7 +110,8 @@ class GraphNode(TypedDict):
     state: str
     layer: int
     digest: NotRequired[str]
-    facts: List[Tuple[str, str]]
+    # JSON arrays (each pair contains exactly two strings), not Python tuples.
+    facts: List[List[str]]
 
 
 # ``from`` is a Python keyword, so this TypedDict uses the functional form.
@@ -186,6 +189,8 @@ class RelationshipChange(TypedDict):
 
 
 class SemanticDiff(TypedDict):
+    fromObservation: NotRequired[str]
+    toObservation: NotRequired[str]
     did: str
     fromHash: str
     toHash: str
@@ -345,6 +350,15 @@ class ToolEvidence(TypedDict):
     inputSchema: Any
 
 
+class InventoryEvidence(TypedDict):
+    scope: str
+    pagesFetched: int
+    entriesSeen: int
+    entriesDropped: int
+    hasMore: bool
+    reasons: List[str]
+
+
 class McpInspection(TypedDict):
     endpoint: str
     status: str
@@ -356,6 +370,8 @@ class McpInspection(TypedDict):
     instructions: NotRequired[str]
     tools: List[ToolEvidence]
     inventoryHash: str
+    inventoryComplete: NotRequired[bool]
+    inventoryEvidence: NotRequired[InventoryEvidence]
     jcsProfile: NotRequired[str]
     classCounts: Dict[str, int]
     drift: Dict[str, Any]
@@ -396,11 +412,11 @@ class DelegationLink(TypedDict):
     issuer: str
     audience: str
     capabilities: List[str]
-    notBefore: NotRequired[str]
-    expires: NotRequired[str]
-    jti: NotRequired[str]
-    kid: NotRequired[str]
-    alg: NotRequired[str]
+    notBefore: Optional[str]
+    expires: Optional[str]
+    jti: Optional[str]
+    kid: Optional[str]
+    alg: Optional[str]
     digest: str
     signatureValid: bool
     status: str
@@ -412,11 +428,11 @@ class DelegationChainResult(TypedDict):
     status: str
     headline: str
     format: str
-    root: NotRequired[str]
-    leaf: NotRequired[str]
+    root: Optional[str]
+    leaf: Optional[str]
     effectiveCapabilities: List[str]
-    notAfter: NotRequired[str]
-    trustedRoot: NotRequired[bool]
+    notAfter: Optional[str]
+    trustedRoot: Optional[bool]
     links: List[DelegationLink]
     checks: List[Check]
     limitations: List[str]
@@ -452,7 +468,7 @@ class FastVerifyDidResult(TypedDict):
     dimensions: List[Dict[str, str]]
     keys: List[Dict[str, Any]]
     domainBinding: Optional[str]
-    documentSha256: NotRequired[str]
+    documentSha256: Optional[str]
     observedAt: str
     cached: bool
 
@@ -461,9 +477,9 @@ class FastVerifyJwsResult(TypedDict):
     status: Literal["VALID", "INVALID", "INDETERMINATE", "UNSUPPORTED", "MALFORMED"]
     valid: bool
     headline: str
-    alg: NotRequired[str]
-    kid: NotRequired[str]
-    typ: NotRequired[str]
+    alg: NotRequired[Optional[str]]
+    kid: NotRequired[Optional[str]]
+    typ: NotRequired[Optional[str]]
     payload: NotRequired[Any]
     signingInputSha256: NotRequired[str]
     signer: NotRequired[str]

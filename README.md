@@ -85,6 +85,8 @@ Identifiers are percent-encoded exactly once (`quote(did, safe="")`). Non-2xx re
 
 ## Guard agent tools
 
+**0.2.6 migration (breaking):** every execution guard, including standalone `check` calls and one-line wrappers, requires a nonempty, trimmed trusted root DID from application-owned configuration. Missing/null/empty/whitespace roots fail with `GUARD_MISCONFIGURED` at construction, before any network call or handler. TypeScript requires `root` statically; Python retains its Optional annotation but validates it at runtime. Do not obtain the trusted root from model output, a submitted delegation, or an ALLOW response. The configured root is sent to verification and compared with the returned root. Definition pins do not establish issuer authority. Rootless chain/tool verification remains advisory: signature-valid alone is not application authorization. 0.2.5 accepts rootless guards; 0.2.6 rejects them, so this is not a backward-compatible patch.
+
 A guarded tool function runs only when (1) the tool definition the agent received still matches the one you approved and (2) DID.is says the agent's registered delegation grants the tool. Every failure raises `DidisGuardError` and the function does not run (fail-closed).
 
 ```python
@@ -117,7 +119,7 @@ def create_issue(title: str, body: str) -> dict:
 Guarding MCP clients (`mcp` 2.x), LangChain and the OpenAI Agents SDK: see [`examples/`](examples/) and [Guard agent tools](https://docs.did.is/build/guard-tools/#use-with-mcp-and-agent-frameworks).
 
 - The definition check is local (RFC 8785 JCS + SHA-256, the same `definitionSha256` DID.is reports) and makes no network call.
-- The delegation check calls `verify_tool`. An ALLOW is reused for 30 s by default (`allow_cache_seconds`), never past the delegation expiry; DENY and errors are never cached.
+- The delegation check calls `verify_tool`. An ALLOW is reused for 30 s by default (`allow_cache_seconds`), never past a parseable delegation expiry. Expired approvals are refused even on first use or with caching disabled. Approval deadlines and pins are rechecked after awaited work and immediately before execution; DENY and errors never fall back to stale approvals. Missing/unparseable expiry retains TTL-only behavior. This is a pre-execution boundary, not caller authentication, replay prevention, resource binding or per-stream reauthorization.
 - Error codes: `TOOL_DRIFT`, `TOOL_DEFINITION_MISSING`, `TOOL_NOT_AUTHORIZED`, `GUARD_UNAVAILABLE`, `GUARD_MISCONFIGURED`.
 - One tool only: `@didis_guard(client, agent, "github_create_issue", root, capability="github:create_issue", pin=..., definition=...)`. With `AsyncDidisClient` use `AsyncDidisGuard` (or `didis_guard`, which picks it automatically) on `async def` functions.
 - `on_decision` and `DidisGuardError.detail` include both `tool` and `capability`.
@@ -154,6 +156,11 @@ ok = verify_webhook_signature(
 ```
 
 Public API reference: <https://did.is/developers>. Monitoring routes need `admin_token=` and are only available on self-hosted deployments; they are not exposed by the public API.
+
+### Tools-only inventory completeness
+
+`inventoryHash` fingerprints the observed tools, not an assumed entire catalog. Require `inventoryComplete is True` for whole-inventory acceptance. Optional missing completeness is unknown, not true. `inventoryEvidence` reports tools-only page/entry/drop counts, remaining pages and reasons; prompts/resources are not inspected. Pin attestation `ok` checks requested reviewed pins only and can succeed on partial inventory; it does not attest unpinned tools or establish safety. Duplicate ambiguous names cannot satisfy pins.
+
 
 ## License
 

@@ -117,7 +117,7 @@ class SyncGuardTests(unittest.TestCase):
 
     def test_require_pins(self):
         with self.assertRaises(DidisGuardError) as ctx:
-            DidisGuard(FakeClient([allow("x")]), AGENT, require_pins=True).check("x")
+            DidisGuard(FakeClient([allow("x")]), AGENT, ROOT, require_pins=True).check("x")
         self.assertEqual(ctx.exception.code, "TOOL_DEFINITION_MISSING")
 
     def test_every_failure_is_closed_and_uncached(self):
@@ -161,8 +161,10 @@ class SyncGuardTests(unittest.TestCase):
         past = (datetime.now(timezone.utc) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         expired = FakeClient(lambda _: allow("t", expires=past))
         g2 = DidisGuard(expired, AGENT, ROOT)
-        g2.check("t")
-        g2.check("t")
+        for _ in range(2):
+            with self.assertRaises(DidisGuardError) as ctx:
+                g2.check("t")
+            self.assertEqual(ctx.exception.code, "TOOL_NOT_AUTHORIZED")
         self.assertEqual(len(expired.calls), 2)
 
         none = FakeClient(lambda _: allow("t"))
@@ -175,10 +177,10 @@ class SyncGuardTests(unittest.TestCase):
         c = FakeClient([])
         for kwargs in ({"agent": "agent-1"}, {"agent": AGENT, "root": "root"}, {"agent": AGENT, "pins": {"t": "ABC"}}, {"agent": AGENT, "allow_cache_seconds": -1}):
             with self.assertRaises(DidisGuardError) as ctx:
-                DidisGuard(c, **kwargs)
+                DidisGuard(c, **{"root": ROOT, **kwargs})
             self.assertEqual(ctx.exception.code, "GUARD_MISCONFIGURED")
         with self.assertRaises(DidisGuardError) as ctx:
-            DidisGuard(c, AGENT).check(" t")
+            DidisGuard(c, AGENT, ROOT).check(" t")
         self.assertEqual(ctx.exception.code, "GUARD_MISCONFIGURED")
 
     def test_sync_guard_wraps_async_function(self):
@@ -228,7 +230,7 @@ class AsyncGuardTests(unittest.TestCase):
     def test_async_guard_rejects_sync_functions_and_one_liner_picks_async(self):
         client = FakeAsyncClient([allow("t")])
         with self.assertRaises(DidisGuardError):
-            AsyncDidisGuard(client, AGENT).tool("t")(lambda: None)
+            AsyncDidisGuard(client, AGENT, ROOT).tool("t")(lambda: None)
 
         @didis_guard(client, AGENT, "t", ROOT)
         async def run():
@@ -265,17 +267,17 @@ class CapabilityMappingTests(unittest.TestCase):
     def test_answer_for_another_capability_is_rejected(self):
         client = FakeClient([allow("weather:forecast")])
         with self.assertRaises(DidisGuardError) as ctx:
-            DidisGuard(client, AGENT).check("weather_forecast", capability="weather:alerts")
+            DidisGuard(client, AGENT, ROOT).check("weather_forecast", capability="weather:alerts")
         self.assertEqual(ctx.exception.code, "GUARD_UNAVAILABLE")
 
     def test_default_capability_is_tool_name(self):
         client = FakeClient([allow("weather:forecast")])
-        DidisGuard(client, AGENT).check("weather:forecast")
+        DidisGuard(client, AGENT, ROOT).check("weather:forecast")
         self.assertEqual(client.calls[0][1], "weather:forecast")
 
     def test_capabilities_must_be_exact(self):
         client = FakeClient(lambda _: allow("x"))
-        guard = DidisGuard(client, AGENT)
+        guard = DidisGuard(client, AGENT, ROOT)
         for cap in ["*", "weather:*", "a::b", ":a", "a:", "two words", "", " weather:forecast", "a\n"]:
             with self.assertRaises(DidisGuardError, msg=cap) as ctx:
                 guard.check("t", capability=cap)
@@ -286,7 +288,7 @@ class CapabilityMappingTests(unittest.TestCase):
     def test_deny_detail_carries_both_names(self):
         client = FakeClient([deny("payments:refund")])
         with self.assertRaises(DidisGuardError) as ctx:
-            DidisGuard(client, AGENT).check("payments_refund", capability="payments:refund")
+            DidisGuard(client, AGENT, ROOT).check("payments_refund", capability="payments:refund")
         self.assertEqual((ctx.exception.code, ctx.exception.tool, ctx.exception.detail["capability"]), ("TOOL_NOT_AUTHORIZED", "payments_refund", "payments:refund"))
 
     def test_async_guard_and_one_liner_forward_capability(self):
@@ -307,9 +309,21 @@ class CapabilityMappingTests(unittest.TestCase):
             raise RuntimeError("server gone")
 
         with self.assertRaises(DidisGuardError) as ctx:
-            asyncio.run(AsyncDidisGuard(client, AGENT, pins=pins).check("weather_forecast", broken, capability="weather:forecast"))
+            asyncio.run(AsyncDidisGuard(client, AGENT, ROOT, pins=pins).check("weather_forecast", broken, capability="weather:forecast"))
         self.assertEqual(ctx.exception.code, "TOOL_DEFINITION_MISSING")
         self.assertEqual(client.calls, [])
+
+class InventoryAttestationScopeTests(unittest.TestCase):
+    def test_requested_pins_on_partial_unknown_and_duplicate(self):
+        from didis.guard import _attestation
+        for complete in [True, False, None]:
+            result = _attestation({"status": "INSPECTED", "inventoryHash": "subset", "inventoryComplete": complete, "tools": [{"name": "reviewed", "definitionSha256": "pin"}, {"name": "extra", "definitionSha256": "other"}]}, {"reviewed": "pin"})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["scope"], "requested-pins")
+            self.assertIs(result["inventoryComplete"], complete)
+            self.assertEqual(result["unpinned"], ["extra"])
+        result = _attestation({"status": "INSPECTED", "inventoryComplete": False, "tools": [{"name": "reviewed", "definitionSha256": "pin"}] * 2}, {"reviewed": "pin"})
+        self.assertFalse(result["ok"])
 
 
 if __name__ == "__main__":
