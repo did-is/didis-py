@@ -325,6 +325,106 @@ class InventoryAttestationScopeTests(unittest.TestCase):
         result = _attestation({"status": "INSPECTED", "inventoryComplete": False, "tools": [{"name": "reviewed", "definitionSha256": "pin"}] * 2}, {"reviewed": "pin"})
         self.assertFalse(result["ok"])
 
+    def test_expected_operator_did_requires_verified_binding(self):
+        from didis.guard import _attestation
+        ok = _attestation(
+            {
+                "status": "INSPECTED",
+                "inventoryHash": "h",
+                "tools": [{"name": "reviewed", "definitionSha256": "pin"}],
+                "operatorBinding": {
+                    "status": "VERIFIED",
+                    "declaredDid": "did:web:mcp.example",
+                    "claimSource": "MCP_DISCOVER_META",
+                    "endpointOrigin": "https://mcp.example",
+                    "detail": "verified",
+                },
+            },
+            {"reviewed": "pin"},
+            expected_operator_did="did:web:mcp.example",
+        )
+        self.assertTrue(ok["ok"])
+        self.assertTrue(ok["operatorVerified"])
+
+        bad = _attestation(
+            {
+                "status": "INSPECTED",
+                "inventoryHash": "h",
+                "tools": [{"name": "reviewed", "definitionSha256": "pin"}],
+                "operatorBinding": {
+                    "status": "UNVERIFIED_LINK",
+                    "declaredDid": "did:web:mcp.example",
+                    "claimSource": "MCP_DISCOVER_META",
+                    "endpointOrigin": "https://mcp.example",
+                    "detail": "unverified",
+                },
+            },
+            {"reviewed": "pin"},
+            expected_operator_did="did:web:mcp.example",
+        )
+        self.assertFalse(bad["ok"])
+        self.assertFalse(bad["operatorVerified"])
+
+
+class PolicyGateGuardTests(unittest.TestCase):
+    def test_sync_and_async_policy_gate_fail_closed_and_cache_pass(self):
+        pass_resp = {
+            "evaluation": {
+                "did": AGENT,
+                "status": "PASS",
+                "headline": "All 1 evaluated rules pass.",
+                "rulesEvaluated": 1,
+                "rulesPassed": 1,
+                "evaluations": [],
+                "evaluatedAt": "2026-11-13T00:00:00Z",
+            },
+            "credential": None,
+            "resolution": None,
+        }
+        indet_resp = {
+            "evaluation": {
+                "did": AGENT,
+                "status": "INDETERMINATE",
+                "headline": "LEI not confirmed.",
+                "rulesEvaluated": 1,
+                "rulesPassed": 0,
+                "evaluations": [],
+                "evaluatedAt": "2026-11-13T00:00:00Z",
+            },
+            "credential": None,
+            "resolution": None,
+        }
+
+        class PolicyFakeClient(FakeClient):
+            def evaluate_policy_ref(self, did, policy_ref, credential=None, *, trusted_issuer_certificates=None):
+                self.calls.append(("policy_ref", did, policy_ref, credential, trusted_issuer_certificates))
+                return self._next()
+
+        client = PolicyFakeClient([indet_resp, pass_resp, allow("weather:forecast")])
+        with self.assertRaises(DidisGuardError) as bad_cfg:
+            DidisGuard(client, AGENT, ROOT, policy_gate={"policy_ref": "INVALID SLUG"})
+        self.assertEqual(bad_cfg.exception.code, "GUARD_MISCONFIGURED")
+
+        guard = DidisGuard(
+            client,
+            AGENT,
+            ROOT,
+            policy_gate={
+                "policy_ref": "acme-lei:v1",
+                "credential": "jwt~",
+                "trusted_issuer_certificates": ["-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----"],
+            },
+        )
+        with self.assertRaises(DidisGuardError) as blocked:
+            guard.check("weather_forecast", capability="weather:forecast")
+        self.assertEqual(blocked.exception.code, "POLICY_NOT_SATISFIED")
+        self.assertEqual(len(client.calls), 1)  # verify_tool not called when policy != PASS
+
+        guard.check("weather_forecast", capability="weather:forecast")
+        self.assertEqual(len(client.calls), 3)
+        guard.check("weather_forecast", capability="weather:forecast")
+        self.assertEqual(len(client.calls), 3)  # cached
+
 
 if __name__ == "__main__":
     unittest.main()

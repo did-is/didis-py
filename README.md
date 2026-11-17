@@ -5,7 +5,7 @@ Official Python SDK for the [DID.is](https://did.is) public API: DID resolution 
 The distribution is `didis-py`; the import name is `didis`.
 
 
-Current release: **0.2.7**. See [CHANGELOG.md](CHANGELOG.md) for root-required guard migration and corrected first-party license attribution.
+Current release: **0.2.8**. See [CHANGELOG.md](CHANGELOG.md) for saved team policy / `organizationLei` contracts, guard `policy_gate` and `expected_operator_did`, Graph provenance types, and the 0.2.7 root-required guard migration.
 
 ## Install
 
@@ -123,10 +123,11 @@ Guarding MCP clients (`mcp` 2.x), LangChain and the OpenAI Agents SDK: see [`exa
 
 - The definition check is local (RFC 8785 JCS + SHA-256, the same `definitionSha256` DID.is reports) and makes no network call.
 - The delegation check calls `verify_tool`. An ALLOW is reused for 30 s by default (`allow_cache_seconds`), never past a parseable delegation expiry. Expired approvals are refused even on first use or with caching disabled. Approval deadlines and pins are rechecked after awaited work and immediately before execution; DENY and errors never fall back to stale approvals. Missing/unparseable expiry retains TTL-only behavior. This is a pre-execution boundary, not caller authentication, replay prevention, resource binding or per-stream reauthorization.
-- Error codes: `TOOL_DRIFT`, `TOOL_DEFINITION_MISSING`, `TOOL_NOT_AUTHORIZED`, `GUARD_UNAVAILABLE`, `GUARD_MISCONFIGURED`.
+- Error codes: `TOOL_DRIFT`, `TOOL_DEFINITION_MISSING`, `TOOL_NOT_AUTHORIZED`, `POLICY_NOT_SATISFIED`, `OPERATOR_NOT_VERIFIED`, `GUARD_UNAVAILABLE`, `GUARD_MISCONFIGURED`.
+- Optional `policy_gate` (`{"policy": ...}` or saved `{"policy_ref": ...}`, plus optional `credential` and `trusted_issuer_certificates`) evaluates DID/credential/organization LEI rules before delegation checks and refuses non-`PASS` results with `POLICY_NOT_SATISFIED`.
 - One tool only: `@didis_guard(client, agent, "github_create_issue", root, capability="github:create_issue", pin=..., definition=...)`. With `AsyncDidisClient` use `AsyncDidisGuard` (or `didis_guard`, which picks it automatically) on `async def` functions.
 - `on_decision` and `DidisGuardError.detail` include both `tool` and `capability`.
-- `attest_mcp_pins(client, endpoint, pins)` asks DID.is to inspect a public MCP server and compares its hashes with your pins. Run it at startup or deploy time, not per call: it is an outbound, rate-limited request, and servers that need login or run on a private network cannot be inspected.
+- `attest_mcp_pins(client, endpoint, pins, expected_operator_did=...)` (and `attest_mcp_pins_async`) asks DID.is to inspect a public MCP server, compares its hashes with your pins, and optionally requires bidirectional `operatorBinding` (`VERIFIED`) for `expected_operator_did`. Run it at startup or deploy time, not per call: it is an outbound, rate-limited request, and servers that need login or run on a private network cannot be inspected.
 
 ## Webhooks
 

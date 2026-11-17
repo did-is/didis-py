@@ -4,6 +4,13 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-17
+
+### Added
+
+- Saved team policy and organization LEI SDK contracts (`PolicyRules.organizationLei`, `OrganizationEvidence`, `OperatorBindingEvidence`, `SavedPolicyProfile`, sync/async `evaluate_policy_ref` and `policies`, and `trusted_issuer_certificates` on `evaluate_policy`), plus optional fail-closed `policy_gate` (`POLICY_NOT_SATISFIED`) on `DidisGuard` / `AsyncDidisGuard` / `didis_guard` and `expected_operator_did` verification on `attest_mcp_pins` / `attest_mcp_pins_async`.
+- Optional relation-specific Graph provenance, bounded projection coverage and immutable public Graph observation response types. Historical Graph selection is a same-route API extension; an old resolver's live response must not be mistaken for a selected observation. Existing required response fields and verification meanings are unchanged.
+
 ## [0.2.7] - 2026-11-03
 
 ### Fixed
@@ -99,7 +106,9 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 - Response shapes as `TypedDict`s in `didis.types`.
 - Webhook helpers `verify_webhook_signature` and `verify_customer_monitor_signature`.
 
-[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/did-is/didis-py/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/did-is/didis-py/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/did-is/didis-py/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/did-is/didis-py/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/did-is/didis-py/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/did-is/didis-py/compare/v0.2.3...v0.2.4
@@ -108,5 +117,3 @@ All notable changes to `didis-py` (import name `didis`) are listed here. The for
 [0.2.1]: https://github.com/did-is/didis-py/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/did-is/didis-py/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/did-is/didis-py/releases/tag/v0.1.0
-
-[0.2.7]: https://github.com/did-is/didis-py/compare/v0.2.6...v0.2.7

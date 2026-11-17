@@ -47,8 +47,17 @@ _DID = re.compile(r"^did:[a-z0-9]+:\S+$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # An exact DID.is capability: ":"-separated non-empty segments, no whitespace, no "*".
 _CAPABILITY = re.compile(r"^[^\s:*]+(?::[^\s:*]+)*\Z")
+_POLICY_REF = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}(?::v[1-9][0-9]{0,5})?\Z")
 
-GUARD_ERROR_CODES = ("TOOL_DRIFT", "TOOL_DEFINITION_MISSING", "TOOL_NOT_AUTHORIZED", "GUARD_UNAVAILABLE", "GUARD_MISCONFIGURED")
+GUARD_ERROR_CODES = (
+    "TOOL_DRIFT",
+    "TOOL_DEFINITION_MISSING",
+    "TOOL_NOT_AUTHORIZED",
+    "POLICY_NOT_SATISFIED",
+    "OPERATOR_NOT_VERIFIED",
+    "GUARD_UNAVAILABLE",
+    "GUARD_MISCONFIGURED",
+)
 
 
 class DidisGuardError(Exception):
@@ -158,7 +167,7 @@ _Ticket = tuple[float, float]
 
 
 class _GuardCore:
-    def __init__(self, agent: str, root: Optional[str], pins: Optional[Mapping[str, str]], require_pins: bool, allow_cache_seconds: float, on_decision: Optional[DecisionHook]):
+    def __init__(self, agent: str, root: Optional[str], pins: Optional[Mapping[str, str]], require_pins: bool, allow_cache_seconds: float, on_decision: Optional[DecisionHook], policy_gate: Optional[Mapping[str, Any]] = None, client: Any = None):
         if not isinstance(agent, str) or not _DID.match(agent):
             raise DidisGuardError("GUARD_MISCONFIGURED", "", "agent must be a DID")
         if not isinstance(root, str) or root != root.strip() or not _DID.fullmatch(root):
@@ -169,10 +178,39 @@ class _GuardCore:
         for name, pin in self.pins.items():
             if not isinstance(pin, str) or not _HEX64.match(pin):
                 raise DidisGuardError("GUARD_MISCONFIGURED", name, "pins must be lowercase hex SHA-256")
+        self.policy_gate: Optional[Dict[str, Any]] = None
+        if policy_gate is not None:
+            if not isinstance(policy_gate, Mapping):
+                raise DidisGuardError("GUARD_MISCONFIGURED", "", "policy_gate must be a mapping")
+            subj = policy_gate.get("subjectDid", policy_gate.get("subject_did", agent))
+            if not isinstance(subj, str) or subj != subj.strip() or not _DID.fullmatch(subj):
+                raise DidisGuardError("GUARD_MISCONFIGURED", "", "policy_gate subject_did must be a trimmed DID")
+            inline = policy_gate.get("policy")
+            pref = policy_gate.get("policyRef", policy_gate.get("policy_ref"))
+            if (inline is not None) == (pref is not None):
+                raise DidisGuardError("GUARD_MISCONFIGURED", "", "policy_gate requires exactly one of 'policy' or 'policy_ref'")
+            if pref is not None:
+                if not isinstance(pref, str) or not _POLICY_REF.fullmatch(pref):
+                    raise DidisGuardError("GUARD_MISCONFIGURED", "", "policy_gate policy_ref must be a valid slug or slug:vN")
+                if client is not None and not hasattr(client, "evaluate_policy_ref"):
+                    raise DidisGuardError("GUARD_MISCONFIGURED", "", "client must support evaluate_policy_ref for policy_gate policy_ref")
+            elif client is not None and not hasattr(client, "evaluate_policy"):
+                raise DidisGuardError("GUARD_MISCONFIGURED", "", "client must support evaluate_policy for policy_gate policy")
+            certs = policy_gate.get("trustedIssuerCertificates", policy_gate.get("trusted_issuer_certificates"))
+            if certs is not None and (not isinstance(certs, (list, tuple)) or any(not isinstance(c, str) or not c.strip() for c in certs)):
+                raise DidisGuardError("GUARD_MISCONFIGURED", "", "policy_gate trusted_issuer_certificates must be non-empty strings")
+            self.policy_gate = {
+                "subject": subj,
+                "policy": inline,
+                "policy_ref": pref,
+                "credential": policy_gate.get("credential"),
+                "certs": list(certs) if certs is not None else None,
+            }
         self.agent, self._root, self.require_pins = agent, root, require_pins
         self.allow_cache_seconds = float(allow_cache_seconds)
         self.on_decision = on_decision
         self._allowed: Dict[str, _Ticket] = {}
+        self._policy_until: float = 0.0
         self._lock = threading.Lock()
 
     @property
@@ -261,6 +299,38 @@ class _GuardCore:
         self._report(tool, capability, True, str(auth.get("reason", "")), False)
         return ticket
 
+    def cached_policy(self) -> Optional[float]:
+        if self.policy_gate is None:
+            return math.inf
+        with self._lock:
+            if self._policy_until > time.monotonic():
+                return self._policy_until
+            self._policy_until = 0.0
+        return None
+
+    def accept_policy(self, tool: str, capability: str, resp: Any) -> float:
+        assert self.policy_gate is not None
+        subj = self.policy_gate["subject"]
+        ev = resp.get("evaluation") if isinstance(resp, Mapping) else None
+        if not isinstance(ev, Mapping) or not isinstance(ev.get("status"), str) or ev.get("did") != subj:
+            raise self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is returned an unexpected policy evaluation answer")
+        status = ev["status"]
+        if status != "PASS":
+            detail: Dict[str, Any] = {"policyStatus": status, "subjectDid": subj}
+            if self.policy_gate["policy_ref"] is not None:
+                detail["policyRef"] = self.policy_gate["policy_ref"]
+            raise self.fail("POLICY_NOT_SATISFIED", tool, capability, str(ev.get("headline") or f"policy status is {status} (not PASS)"), detail)
+        if self.allow_cache_seconds > 0:
+            until = time.monotonic() + self.allow_cache_seconds
+            with self._lock:
+                self._policy_until = until
+            return until
+        return math.inf
+
+    def policy_unavailable(self, tool: str, capability: str, exc: Exception) -> DidisGuardError:
+        status = getattr(exc, "status", None)
+        return self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is policy evaluation failed" + (f" (HTTP {status})" if status else ""), {"status": status})
+
     def unavailable(self, tool: str, capability: str, exc: Exception) -> DidisGuardError:
         status = getattr(exc, "status", None)
         return self.fail("GUARD_UNAVAILABLE", tool, capability, "DID.is verify-tool failed" + (f" (HTTP {status})" if status else ""), {"status": status})
@@ -268,6 +338,7 @@ class _GuardCore:
     def clear_cache(self) -> None:
         with self._lock:
             self._allowed.clear()
+            self._policy_until = 0.0
 
 
 class DidisGuard:
@@ -278,11 +349,11 @@ class DidisGuard:
     ``GUARD_MISCONFIGURED`` at construction, before any network or handler work.
     """
 
-    def __init__(self, client: DidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
+    def __init__(self, client: DidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, policy_gate: Optional[Mapping[str, Any]] = None, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
         if not hasattr(client, "verify_tool"):
             raise DidisGuardError("GUARD_MISCONFIGURED", "", "a DidisClient is required")
         self._client = client
-        self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision)
+        self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision, policy_gate=policy_gate, client=client)
 
     def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
         """Raises :class:`DidisGuardError` unless the call may proceed.
@@ -292,10 +363,33 @@ class DidisGuard:
         """
         self._prepare(tool, definition, capability=capability)
 
+    def _check_policy(self, tool: str, cap: str) -> float:
+        core = self._core
+        until = core.cached_policy()
+        if until is not None:
+            return until
+        assert core.policy_gate is not None
+        cred = core.policy_gate["credential"]
+        if callable(cred):
+            try:
+                cred = cred()
+            except Exception:
+                raise core.fail("POLICY_NOT_SATISFIED", tool, cap, "could not read credential for policy_gate") from None
+        certs = core.policy_gate["certs"]
+        try:
+            if core.policy_gate["policy_ref"] is not None:
+                resp = self._client.evaluate_policy_ref(core.policy_gate["subject"], core.policy_gate["policy_ref"], cred, trusted_issuer_certificates=certs)
+            else:
+                resp = self._client.evaluate_policy(core.policy_gate["subject"], core.policy_gate["policy"], cred, trusted_issuer_certificates=certs)
+        except Exception as exc:
+            raise core.policy_unavailable(tool, cap, exc) from None
+        return core.accept_policy(tool, cap, resp)
+
     def _prepare(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> _Ticket:
         core = self._core
         cap = core.resolve_names(tool, capability)
         core.check_definition(tool, cap, definition)
+        policy_mono = self._check_policy(tool, cap)
         ticket = core.cached(tool, cap)
         if ticket is None:
             try:
@@ -303,6 +397,7 @@ class DidisGuard:
             except Exception as exc:
                 raise core.unavailable(tool, cap, exc) from None
             ticket = core.accept(tool, cap, auth)
+        ticket = (min(ticket[0], policy_mono), ticket[1])
         if tool in core.pins or core.require_pins:
             core.check_definition(tool, cap, definition)
         core.assert_fresh(tool, cap, ticket)
@@ -338,11 +433,11 @@ class DidisGuard:
 class AsyncDidisGuard:
     """Async execution guard; requires an application-owned root, like :class:`DidisGuard`."""
 
-    def __init__(self, client: AsyncDidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
+    def __init__(self, client: AsyncDidisClient, agent: str, root: Optional[str] = None, *, pins: Optional[Mapping[str, str]] = None, require_pins: bool = False, policy_gate: Optional[Mapping[str, Any]] = None, allow_cache_seconds: float = 30.0, on_decision: Optional[DecisionHook] = None):
         if not hasattr(client, "verify_tool"):
             raise DidisGuardError("GUARD_MISCONFIGURED", "", "an AsyncDidisClient is required")
         self._client = client
-        self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision)
+        self._core = _GuardCore(agent, root, pins, require_pins, allow_cache_seconds, on_decision, policy_gate=policy_gate, client=client)
 
     async def _check_definition(self, tool: str, cap: str, definition: Definition) -> None:
         if callable(definition):
@@ -353,6 +448,29 @@ class AsyncDidisGuard:
                 raise self._core.fail("TOOL_DEFINITION_MISSING", tool, cap, f"could not read the current definition of '{tool}'") from None
         self._core.check_definition(tool, cap, definition)
 
+    async def _check_policy(self, tool: str, cap: str) -> float:
+        core = self._core
+        until = core.cached_policy()
+        if until is not None:
+            return until
+        assert core.policy_gate is not None
+        cred = core.policy_gate["credential"]
+        if callable(cred):
+            try:
+                got = cred()
+                cred = (await got) if inspect.isawaitable(got) else got
+            except Exception:
+                raise core.fail("POLICY_NOT_SATISFIED", tool, cap, "could not read credential for policy_gate") from None
+        certs = core.policy_gate["certs"]
+        try:
+            if core.policy_gate["policy_ref"] is not None:
+                resp = await self._client.evaluate_policy_ref(core.policy_gate["subject"], core.policy_gate["policy_ref"], cred, trusted_issuer_certificates=certs)
+            else:
+                resp = await self._client.evaluate_policy(core.policy_gate["subject"], core.policy_gate["policy"], cred, trusted_issuer_certificates=certs)
+        except Exception as exc:
+            raise core.policy_unavailable(tool, cap, exc) from None
+        return core.accept_policy(tool, cap, resp)
+
     async def check(self, tool: str, definition: Definition = None, *, capability: Optional[str] = None) -> None:
         ticket = await self._prepare(tool, definition, capability=capability)
         self._core.assert_fresh(tool, tool if capability is None else capability, ticket)
@@ -361,6 +479,7 @@ class AsyncDidisGuard:
         core = self._core
         cap = core.resolve_names(tool, capability)
         await self._check_definition(tool, cap, definition)
+        policy_mono = await self._check_policy(tool, cap)
         ticket = core.cached(tool, cap)
         if ticket is None:
             try:
@@ -368,6 +487,7 @@ class AsyncDidisGuard:
             except Exception as exc:
                 raise core.unavailable(tool, cap, exc) from None
             ticket = core.accept(tool, cap, auth)
+        ticket = (min(ticket[0], policy_mono), ticket[1])
         if tool in core.pins or core.require_pins:
             await self._check_definition(tool, cap, definition)
         core.assert_fresh(tool, cap, ticket)
@@ -408,16 +528,24 @@ def didis_guard(client: Union[DidisClient, AsyncDidisClient], agent: str, tool: 
     return guard.tool(tool, definition, capability=capability)
 
 
-def attest_mcp_pins(client: DidisClient, endpoint: str, pins: Mapping[str, str]) -> Dict[str, Any]:
-    """Optional startup check against DID.is ``inspect_mcp``; ``ok`` covers requested pins only, even on partial inventory; no all-tools or safety claim."""
-    return _attestation(client.inspect_mcp(endpoint), pins)
+def attest_mcp_pins(client: DidisClient, endpoint: str, pins: Mapping[str, str], *, expected_operator_did: Optional[str] = None) -> Dict[str, Any]:
+    """Optional startup check against DID.is ``inspect_mcp``; ``ok`` covers requested pins only (and optional bidirectional ``expected_operator_did``), even on partial inventory; no all-tools or safety claim."""
+    _validate_expected_operator_did(expected_operator_did)
+    return _attestation(client.inspect_mcp(endpoint), pins, expected_operator_did=expected_operator_did)
 
 
-async def attest_mcp_pins_async(client: AsyncDidisClient, endpoint: str, pins: Mapping[str, str]) -> Dict[str, Any]:
-    return _attestation(await client.inspect_mcp(endpoint), pins)
+async def attest_mcp_pins_async(client: AsyncDidisClient, endpoint: str, pins: Mapping[str, str], *, expected_operator_did: Optional[str] = None) -> Dict[str, Any]:
+    _validate_expected_operator_did(expected_operator_did)
+    return _attestation(await client.inspect_mcp(endpoint), pins, expected_operator_did=expected_operator_did)
 
 
-def _attestation(inspection: Mapping[str, Any], pins: Mapping[str, str]) -> Dict[str, Any]:
+def _validate_expected_operator_did(expected_operator_did: Optional[str]) -> None:
+    if expected_operator_did is not None:
+        if not isinstance(expected_operator_did, str) or expected_operator_did != expected_operator_did.strip() or not _DID.fullmatch(expected_operator_did):
+            raise DidisGuardError("GUARD_MISCONFIGURED", "", "expected_operator_did must be a trimmed DID")
+
+
+def _attestation(inspection: Mapping[str, Any], pins: Mapping[str, str], *, expected_operator_did: Optional[str] = None) -> Dict[str, Any]:
     seen: Dict[str, Any] = {}
     ambiguous = set()
     for tool in inspection.get("tools", []):
@@ -430,8 +558,16 @@ def _attestation(inspection: Mapping[str, Any], pins: Mapping[str, str]) -> Dict
         else:
             seen[name] = tool.get("definitionSha256")
     mismatched = [{"tool": name, "expected": exp, "observed": seen.get(name)} for name, exp in pins.items() if seen.get(name) != exp]
-    return {
-        "ok": inspection.get("status") == "INSPECTED" and not mismatched,
+    binding = inspection.get("operatorBinding")
+    operator_verified: Optional[bool] = None
+    if expected_operator_did is not None:
+        operator_verified = bool(
+            isinstance(binding, Mapping)
+            and binding.get("status") == "VERIFIED"
+            and binding.get("declaredDid") == expected_operator_did
+        )
+    out: Dict[str, Any] = {
+        "ok": inspection.get("status") == "INSPECTED" and not mismatched and (True if operator_verified is None else operator_verified),
         "inventoryHash": inspection.get("inventoryHash"),
         "inventoryComplete": inspection.get("inventoryComplete"),
         "inventoryEvidence": inspection.get("inventoryEvidence"),
@@ -440,6 +576,11 @@ def _attestation(inspection: Mapping[str, Any], pins: Mapping[str, str]) -> Dict
         "unpinned": [n for n in seen if n not in pins],
         "status": inspection.get("status"),
     }
+    if binding is not None:
+        out["operatorBinding"] = binding
+    if operator_verified is not None:
+        out["operatorVerified"] = operator_verified
+    return out
 
 
 __all__ = [

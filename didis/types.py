@@ -114,13 +114,52 @@ class GraphNode(TypedDict):
     facts: List[List[str]]
 
 
+class GraphProvenance(TypedDict):
+    """DID.is-native relation-specific evidence, not independent proof or a new verdict."""
+    profile: str
+    method: str
+    evidenceRefs: List[str]
+    observedAt: str
+    verifier: Dict[str, str]
+    sourceUri: NotRequired[str]
+    hashes: List[List[str]]
+    validFrom: NotRequired[str]
+    validUntil: NotRequired[str]
+    limitations: List[str]
+
+
+class GraphCoverage(TypedDict):
+    scope: str
+    keysShown: int
+    keysTotal: int
+    servicesShown: int
+    servicesTotal: int
+    aliasesShown: int
+    aliasesTotal: int
+    controllersShown: int
+    controllersTotal: int
+    truncated: bool
+    note: str
+
+
+class GraphObservation(TypedDict):
+    id: str
+    did: str
+    observedAt: str
+    snapshotHash: str
+    nodeCount: int
+    edgeCount: int
+    resolverVersion: str
+
+
 # ``from`` is a Python keyword, so this TypedDict uses the functional form.
-GraphEdge = TypedDict("GraphEdge", {"id": str, "from": str, "to": str, "relation": str, "state": str})
+GraphEdge = TypedDict("GraphEdge", {"id": str, "from": str, "to": str, "relation": str, "state": str, "provenance": NotRequired[GraphProvenance]})
 
 
 class Graph(TypedDict):
     nodes: List[GraphNode]
     edges: List[GraphEdge]
+    coverage: NotRequired[GraphCoverage]
 
 
 class EnrichedResolution(TypedDict):
@@ -180,6 +219,9 @@ class HistoryResponse(TypedDict):
     count: int
     history: List[ObservationRecord]
     note: str
+    graphHistory: NotRequired[List[GraphObservation]]
+    graphHistoryStatus: NotRequired[str]
+    graphHistoryNote: NotRequired[str]
 
 
 class RelationshipChange(TypedDict):
@@ -222,6 +264,38 @@ class GraphResponse(TypedDict):
     verdict: Verdict
     nodes: List[GraphNode]
     edges: List[GraphEdge]
+    evidence: NotRequired[Evidence]
+    coverage: NotRequired[GraphCoverage]
+    resolver: NotRequired[Dict[str, str]]
+    observation: NotRequired[GraphObservation]
+    note: NotRequired[str]
+
+
+class OperatorBindingEvidence(TypedDict):
+    status: str  # VERIFIED | KEY_BOUND | UNVERIFIED_LINK | NOT_DECLARED | INVALID | INDETERMINATE
+    declaredDid: NotRequired[str]
+    claimSource: str  # MCP_DISCOVER_META | A2A_CARD_SIGNATURE | NONE
+    endpointOrigin: str
+    didOrigin: NotRequired[str]
+    didServiceId: NotRequired[str]
+    reverseDeclaration: NotRequired[str]  # DID_SERVICE_ENDPOINT | DID_ALSO_KNOWN_AS | SAME_DID_ORIGIN
+    configurationStatus: NotRequired[str]
+    configurationUrl: NotRequired[str]
+    configurationSha256: NotRequired[str]
+    detail: str
+
+
+class OrganizationEvidence(TypedDict):
+    status: str  # CONFIRMED | UNANCHORED | INACTIVE | INVALID
+    lei: str
+    carrier: str  # ISO_17442_2_EXTENSION | ETSI_ORG_IDENTIFIER
+    snapshotStatus: str  # MATCHED | NOT_FOUND | NOT_CONFIGURED | UNAVAILABLE
+    legalName: NotRequired[str]
+    jurisdiction: NotRequired[str]
+    entityStatus: NotRequired[str]
+    registrationStatus: NotRequired[str]
+    sourceAsOf: NotRequired[str]
+    detail: str
 
 
 class IssuerTrust(TypedDict):
@@ -232,6 +306,7 @@ class IssuerTrust(TypedDict):
     trustedListChecked: bool
     chain: NotRequired[List[Dict[str, Any]]]
     metadataUrl: NotRequired[str]
+    organization: NotRequired[OrganizationEvidence]
     proves: str
     doesNotProve: str
 
@@ -303,11 +378,46 @@ class PolicyRules(TypedDict, total=False):
     maxCacheAgeSeconds: int
     credentialStatus: Literal["active"]
     credentialIssuerMustBeSubject: bool
+    organizationLei: str
 
 
 class Policy(TypedDict):
     name: NotRequired[str]
     rules: PolicyRules
+
+
+class SavedPolicyRefMeta(TypedDict):
+    slug: str
+    version: int
+    reference: str
+    rulesSha256: str
+
+
+class PolicyVersionView(TypedDict):
+    version: int
+    reference: str
+    description: NotRequired[str]
+    rules: PolicyRules
+    rulesSha256: str
+    createdAt: int
+
+
+class SavedPolicyProfile(TypedDict):
+    slug: str
+    currentVersion: int
+    latestReference: str
+    pinnedReference: str
+    description: NotRequired[str]
+    rules: PolicyRules
+    rulesSha256: str
+    createdAt: int
+    updatedAt: int
+    versions: List[PolicyVersionView]
+
+
+class CustomerPoliciesResponse(TypedDict):
+    policies: List[SavedPolicyProfile]
+    limits: Dict[str, int]
 
 
 class PolicyRuleEvaluation(TypedDict):
@@ -333,6 +443,7 @@ class PolicyResponse(TypedDict):
     evaluation: PolicyEvaluation
     credential: Optional[CredentialVerification]
     resolution: Optional[Dict[str, Any]]
+    savedPolicy: NotRequired[SavedPolicyRefMeta]
 
 
 class ToolEvidence(TypedDict):
@@ -380,6 +491,7 @@ class McpInspection(TypedDict):
     checks: List[Check]
     headline: str
     tls: NotRequired[Dict[str, Any]]
+    operatorBinding: NotRequired[OperatorBindingEvidence]
     limitations: List[str]
 
 
@@ -404,6 +516,7 @@ class A2aInspection(TypedDict):
     headline: str
     card: Any
     tls: NotRequired[Dict[str, Any]]
+    operatorBinding: NotRequired[OperatorBindingEvidence]
     limitations: List[str]
 
 

@@ -28,6 +28,7 @@ _USER_AGENT = f"didis-py/{_VERSION} python-httpx/{httpx.__version__}"
 from .types import (
     A2aInspection,
     AuthorizationResponse,
+    CustomerPoliciesResponse,
     DelegationVerification,
     DereferencingResult,
     EnrichedResolution,
@@ -325,11 +326,55 @@ class DidisClient:
             body["requiredClaims"] = [dict(r) for r in required_claims]
         return cast(CredentialVerification, _raise_for_problem(self._client.post("/v1/credentials/verify", json=body)))
 
-    def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:
+    def evaluate_policy(
+        self,
+        did: str,
+        policy: Policy,
+        credential: Any = None,
+        *,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> PolicyResponse:
+        certs = list(trusted_issuer_certificates) if trusted_issuer_certificates is not None else None
+        if self._api_key:
+            paid = _paid_body(
+                did=did,
+                policy=dict(policy),
+                credential=credential,
+                trustedIssuerCertificates=certs,
+            )
+            return cast(PolicyResponse, _raise_for_problem(self._client.post("/v1/customer/policy/evaluate", json=paid, headers=self._paid_headers())))
         body: JSON = {"did": did, "policy": dict(policy)}
         if credential is not None:
             body["credential"] = credential
+        if certs is not None:
+            body["trustedIssuerCertificates"] = certs
         return cast(PolicyResponse, _raise_for_problem(self._client.post("/v1/policies/evaluate", json=body)))
+
+    def evaluate_policy_ref(
+        self,
+        did: str,
+        policy_ref: str,
+        credential: Any = None,
+        *,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> PolicyResponse:
+        """Evaluate a saved team policy (``slug`` or ``slug:vN``) privately (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for evaluate_policy_ref()")
+        certs = list(trusted_issuer_certificates) if trusted_issuer_certificates is not None else None
+        paid = _paid_body(
+            did=did,
+            policyRef=policy_ref,
+            credential=credential,
+            trustedIssuerCertificates=certs,
+        )
+        return cast(PolicyResponse, _raise_for_problem(self._client.post("/v1/customer/policy/evaluate", json=paid, headers=self._paid_headers())))
+
+    def policies(self) -> CustomerPoliciesResponse:
+        """List active saved team policy profiles and immutable version history (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for policies()")
+        return cast(CustomerPoliciesResponse, _raise_for_problem(self._client.get("/v1/customer/policies", headers=self._paid_headers(False))))
 
     def usage(self) -> CustomerUsage:
         """This month's team allowance (requires ``api_key``)."""
@@ -485,11 +530,55 @@ class AsyncDidisClient:
             body["requiredClaims"] = [dict(r) for r in required_claims]
         return cast(CredentialVerification, _raise_for_problem(await self._client.post("/v1/credentials/verify", json=body)))
 
-    async def evaluate_policy(self, did: str, policy: Policy, credential: Any = None) -> PolicyResponse:
+    async def evaluate_policy(
+        self,
+        did: str,
+        policy: Policy,
+        credential: Any = None,
+        *,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> PolicyResponse:
+        certs = list(trusted_issuer_certificates) if trusted_issuer_certificates is not None else None
+        if self._api_key:
+            paid = _paid_body(
+                did=did,
+                policy=dict(policy),
+                credential=credential,
+                trustedIssuerCertificates=certs,
+            )
+            return cast(PolicyResponse, _raise_for_problem(await self._client.post("/v1/customer/policy/evaluate", json=paid, headers=self._paid_headers())))
         body: JSON = {"did": did, "policy": dict(policy)}
         if credential is not None:
             body["credential"] = credential
+        if certs is not None:
+            body["trustedIssuerCertificates"] = certs
         return cast(PolicyResponse, _raise_for_problem(await self._client.post("/v1/policies/evaluate", json=body)))
+
+    async def evaluate_policy_ref(
+        self,
+        did: str,
+        policy_ref: str,
+        credential: Any = None,
+        *,
+        trusted_issuer_certificates: Optional[List[str]] = None,
+    ) -> PolicyResponse:
+        """Evaluate a saved team policy (``slug`` or ``slug:vN``) privately (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for evaluate_policy_ref()")
+        certs = list(trusted_issuer_certificates) if trusted_issuer_certificates is not None else None
+        paid = _paid_body(
+            did=did,
+            policyRef=policy_ref,
+            credential=credential,
+            trustedIssuerCertificates=certs,
+        )
+        return cast(PolicyResponse, _raise_for_problem(await self._client.post("/v1/customer/policy/evaluate", json=paid, headers=self._paid_headers())))
+
+    async def policies(self) -> CustomerPoliciesResponse:
+        """List active saved team policy profiles and immutable version history (requires ``api_key``)."""
+        if not self._api_key:
+            raise ValueError("api_key is required for policies()")
+        return cast(CustomerPoliciesResponse, _raise_for_problem(await self._client.get("/v1/customer/policies", headers=self._paid_headers(False))))
 
     async def usage(self) -> CustomerUsage:
         """This month's team allowance (requires ``api_key``)."""
